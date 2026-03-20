@@ -285,15 +285,51 @@
     return message;
   }
 
+  function isCsvFile(file) {
+    if (!file) return false;
+    const name = String(file.name || "").trim().toLowerCase();
+    const type = String(file.type || "").trim().toLowerCase();
+
+    return (
+      name.endsWith(".csv") ||
+      type === "text/csv" ||
+      type === "application/csv" ||
+      type === "application/vnd.ms-excel"
+    );
+  }
+
+  function pickCsvFile(files) {
+    return Array.from(files || []).find((file) => isCsvFile(file)) || null;
+  }
+
   function createController(options) {
     const state = {
       csvEntries: [],
       csvMeta: { totalLines: 0, skippedLines: 0 },
       busy: false,
       batchEventSource: null,
+      dragDepth: 0,
+      dropOverlayActive: false,
     };
 
     const byId = options.byId || ((id) => document.getElementById(id));
+    const showToast = options.showToast || (() => {});
+
+    function getImportModal() {
+      return byId("import-modal");
+    }
+
+    function isModalOpen() {
+      const modal = getImportModal();
+      return Boolean(modal && !modal.classList.contains("hidden"));
+    }
+
+    function hasFilePayload(event) {
+      const dataTransfer = event && event.dataTransfer;
+      if (!dataTransfer) return false;
+      if (dataTransfer.types && Array.from(dataTransfer.types).includes("Files")) return true;
+      return Boolean(dataTransfer.files && dataTransfer.files.length);
+    }
 
     function renderCsvState() {
       const container = byId("import-csv-state");
@@ -336,6 +372,13 @@
       container.classList.remove("hidden");
     }
 
+    function setDropOverlay(active) {
+      state.dropOverlayActive = active;
+      const overlay = byId("import-drop-overlay");
+      if (!overlay) return;
+      overlay.classList.toggle("is-active", active);
+    }
+
     function setBusy(isBusy) {
       state.busy = isBusy;
 
@@ -354,16 +397,22 @@
       state.batchEventSource = null;
     }
 
-    function resetState() {
-      closeStream();
+    function clearCsvState() {
       state.csvEntries = [];
       state.csvMeta = { totalLines: 0, skippedLines: 0 };
-      setBusy(false);
       renderCsvState();
-      renderProgress("");
 
       const csvInput = byId("import-csv");
       if (csvInput) csvInput.value = "";
+    }
+
+    function resetState() {
+      closeStream();
+      clearCsvState();
+      state.dragDepth = 0;
+      setDropOverlay(false);
+      setBusy(false);
+      renderProgress("");
     }
 
     function openModal(mode = "batch") {
@@ -372,10 +421,11 @@
       const textInput = byId("import-text");
       if (textInput) {
         textInput.value = "";
-        textInput.placeholder = mode === "single" ? "输入单个 Token..." : "粘贴 Token，一行一个...";
+        textInput.placeholder =
+          mode === "single" ? "输入单个 Token..." : "粘贴 Token，一行一个...";
       }
 
-      const modal = byId("import-modal");
+      const modal = getImportModal();
       if (!modal) return;
 
       modal.classList.remove("hidden");
@@ -385,7 +435,7 @@
     function closeModal(force = false) {
       if (state.busy && !force) return;
 
-      const modal = byId("import-modal");
+      const modal = getImportModal();
       if (!modal) return;
 
       modal.classList.remove("is-open");
@@ -408,32 +458,111 @@
       URL.revokeObjectURL(url);
     }
 
-    function handleCsvUpload(event) {
+    function loadCsvFile(file, source = "upload") {
+      if (!file) return Promise.resolve(false);
+
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+
+        reader.onload = (loadEvent) => {
+          const parsed = parseCsvText(loadEvent.target && loadEvent.target.result);
+          state.csvEntries = parsed.entries;
+          state.csvMeta = {
+            totalLines: parsed.totalLines,
+            skippedLines: parsed.skippedLines,
+          };
+          renderCsvState();
+          showToast(
+            `${source === "drag" ? "拖拽" : "上传"}已识别 ${file.name || "CSV"}，有效 ${parsed.entries.length} 条`,
+            "success"
+          );
+          resolve(true);
+        };
+
+        reader.onerror = () => {
+          showToast("CSV 读取失败", "error");
+          resolve(false);
+        };
+
+        reader.readAsText(file);
+      });
+    }
+
+    async function handleCsvUpload(event) {
       if (state.busy) return;
 
-      const file = event.target.files && event.target.files[0];
+      const file = pickCsvFile(event.target && event.target.files);
       if (!file) {
-        state.csvEntries = [];
-        state.csvMeta = { totalLines: 0, skippedLines: 0 };
-        renderCsvState();
+        clearCsvState();
+        if (event.target && event.target.files && event.target.files.length > 0) {
+          showToast("仅支持上传 CSV 文件", "warning");
+        }
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (loadEvent) => {
-        const parsed = parseCsvText(loadEvent.target && loadEvent.target.result);
-        state.csvEntries = parsed.entries;
-        state.csvMeta = {
-          totalLines: parsed.totalLines,
-          skippedLines: parsed.skippedLines,
-        };
-        renderCsvState();
-        options.showToast(`已加载 CSV：有效 ${parsed.entries.length} 条`, "success");
-      };
-      reader.onerror = () => {
-        options.showToast("CSV 读取失败", "error");
-      };
-      reader.readAsText(file);
+      await loadCsvFile(file, "upload");
+    }
+
+    function handleGlobalDragEnter(event) {
+      if (!hasFilePayload(event) || state.busy) return;
+
+      event.preventDefault();
+      state.dragDepth += 1;
+      setDropOverlay(true);
+    }
+
+    function handleGlobalDragOver(event) {
+      if (!hasFilePayload(event) || state.busy) return;
+
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      if (!state.dropOverlayActive) setDropOverlay(true);
+    }
+
+    function handleGlobalDragLeave(event) {
+      if (!hasFilePayload(event) || state.busy) return;
+
+      event.preventDefault();
+      state.dragDepth = Math.max(0, state.dragDepth - 1);
+      if (state.dragDepth === 0) setDropOverlay(false);
+    }
+
+    function handleGlobalDragEnd() {
+      state.dragDepth = 0;
+      setDropOverlay(false);
+    }
+
+    async function handleGlobalDrop(event) {
+      if (!hasFilePayload(event)) return;
+
+      event.preventDefault();
+      state.dragDepth = 0;
+      setDropOverlay(false);
+
+      if (state.busy) {
+        showToast("导入进行中，请稍候", "warning");
+        return;
+      }
+
+      const file = pickCsvFile(event.dataTransfer && event.dataTransfer.files);
+      if (!file) {
+        showToast("仅支持拖拽 CSV 文件", "warning");
+        return;
+      }
+
+      if (!isModalOpen()) {
+        openModal("batch");
+      }
+
+      await loadCsvFile(file, "drag");
+    }
+
+    function bindGlobalDropEvents() {
+      global.addEventListener("dragenter", handleGlobalDragEnter);
+      global.addEventListener("dragover", handleGlobalDragOver);
+      global.addEventListener("dragleave", handleGlobalDragLeave);
+      global.addEventListener("dragend", handleGlobalDragEnd);
+      global.addEventListener("drop", handleGlobalDrop);
     }
 
     async function runNsfwBatch(prepared) {
@@ -517,13 +646,19 @@
     async function submitImport() {
       if (state.busy) return;
 
-      const defaultPool = normalizePool(byId("import-pool") && byId("import-pool").value, "ssoBasic");
-      const textEntries = parseTokenText(byId("import-text") && byId("import-text").value, defaultPool);
+      const defaultPool = normalizePool(
+        byId("import-pool") && byId("import-pool").value,
+        "ssoBasic"
+      );
+      const textEntries = parseTokenText(
+        byId("import-text") && byId("import-text").value,
+        defaultPool
+      );
       const csvEntries = resolveEntryPools(state.csvEntries, defaultPool);
       const entries = mergeImportEntries(textEntries, csvEntries);
 
       if (entries.length === 0) {
-        options.showToast("请输入 Token 或上传 CSV", "error");
+        showToast("请输入 Token 或上传 CSV", "error");
         return;
       }
 
@@ -564,7 +699,7 @@
         if (prepared.nsfwTargets.length === 0) {
           await options.onReload();
           closeModal(true);
-          options.showToast(buildImportSummary(prepared), "success");
+          showToast(buildImportSummary(prepared), "success");
           return;
         }
 
@@ -572,22 +707,24 @@
           const nsfwSummary = await runNsfwBatch(prepared);
           await options.onReload();
           closeModal(true);
-          options.showToast(
+          showToast(
             buildImportSummary(prepared, nsfwSummary),
             nsfwSummary.fail > 0 ? "warning" : "success"
           );
         } catch (error) {
           await options.onReload();
           closeModal(true);
-          options.showToast(`Token 已导入，但 NSFW 处理失败：${error.message}`, "warning");
+          showToast(`Token 已导入，但 NSFW 处理失败：${error.message}`, "warning");
         }
       } catch (error) {
         console.error(error);
         setBusy(false);
         renderProgress(`导入失败：${error.message}`, "error");
-        options.showToast(`导入失败：${error.message}`, "error");
+        showToast(`导入失败：${error.message}`, "error");
       }
     }
+
+    bindGlobalDropEvents();
 
     return {
       openModal,
@@ -606,6 +743,8 @@
     resolveEntryPools,
     mergeImportEntries,
     prepareImportPayload,
+    isCsvFile,
+    pickCsvFile,
     createController,
   };
 
