@@ -6,6 +6,7 @@
   <title>账号管理 - Grok2API</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/common/css/common.css?v=1.6.3">
+  <link rel="stylesheet" href="/static/admin/css/token.css?v=1.6.3">
   <link rel="stylesheet" href="/static/admin/css/account.css?v=1.6.3">
   <link rel="stylesheet" href="/static/common/css/toast.css">
 </head>
@@ -34,6 +35,45 @@
         <div class="account-card-value text-red-600" id="stat-expired">0</div>
         <div class="account-card-label">失效账号</div>
       </div>
+    </div>
+
+    <!-- 状态小卡片 -->
+    <div class="grid grid-cols-3 gap-4">
+      <div class="stat-card">
+        <div class="stat-value text-green-600" id="stat-active">0</div>
+        <div class="stat-label">正常</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value text-orange-500" id="stat-cooling">0</div>
+        <div class="stat-label">限流</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value text-red-600" id="stat-disabled">0</div>
+        <div class="stat-label">已禁用</div>
+      </div>
+    </div>
+
+    <!-- 状态筛选 Tab -->
+    <div class="flex items-center gap-4 border-b border-[var(--border)] overflow-x-auto hide-scrollbar" id="status-tabs">
+      <button class="tab-item active" data-filter="all" onclick="filterByStatus('all')">
+        全部 <span class="badge" id="tab-all">0</span>
+      </button>
+      <button class="tab-item" data-filter="active" onclick="filterByStatus('active')">
+        正常 <span class="badge badge-green" id="tab-active">0</span>
+      </button>
+      <button class="tab-item" data-filter="cooling" onclick="filterByStatus('cooling')">
+        限流 <span class="badge badge-orange" id="tab-cooling">0</span>
+      </button>
+      <button class="tab-item" data-filter="expired" onclick="filterByStatus('expired')">
+        失效 <span class="badge badge-red" id="tab-expired">0</span>
+      </button>
+      <span class="tab-sep"></span>
+      <button class="tab-item" data-filter="alive" onclick="filterByStatus('alive')">
+        可用 <span class="badge badge-green" id="tab-alive">0</span>
+      </button>
+      <button class="tab-item" data-filter="dead" onclick="filterByStatus('dead')">
+        不可用 <span class="badge badge-red" id="tab-dead">0</span>
+      </button>
     </div>
 
     <!-- 操作按钮栏 -->

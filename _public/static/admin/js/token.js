@@ -218,12 +218,6 @@ function updateStats(data) {
   const imageQuota = Math.floor(chatQuota / 2);
   const totalConsumed = flatTokens.reduce((sum, t) => sum + (t.consumed || 0), 0);
 
-  // 更新统计卡片 (这些不受 consumedMode 影响)
-  setText('stat-total', totalTokens.toLocaleString());
-  setText('stat-active', activeTokens.toLocaleString());
-  setText('stat-cooling', coolingTokens.toLocaleString());
-  setText('stat-invalid', invalidTokens.toLocaleString());
-
   // 根据配置决定显示消耗还是剩余
   if (consumedModeEnabled) {
     setText('stat-chat-quota', totalConsumed.toLocaleString());
@@ -322,17 +316,6 @@ function renderTable() {
     }
     tdStatus.innerHTML = statusHtml;
 
-    // Alive (Center)
-    const tdAlive = document.createElement('td');
-    tdAlive.className = 'text-center text-xs';
-    if (item.alive === true) {
-      tdAlive.innerHTML = '<span class="text-green-600" title="可用">&#10003;</span>';
-    } else if (item.alive === false) {
-      tdAlive.innerHTML = '<span class="text-red-600" title="不可用">&#10007;</span>';
-    } else {
-      tdAlive.innerHTML = '<span class="text-gray-400" title="未检测">-</span>';
-    }
-
     // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
@@ -384,7 +367,6 @@ function renderTable() {
     tr.appendChild(tdToken);
     tr.appendChild(tdType);
     tr.appendChild(tdStatus);
-    tr.appendChild(tdAlive);
     tr.appendChild(tdQuota);
     tr.appendChild(tdNote);
     tr.appendChild(tdActions);

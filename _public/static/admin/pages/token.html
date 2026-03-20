@@ -52,25 +52,6 @@
 
       <!-- Statistics -->
       <div class="grid grid-cols-4 gap-4 mb-6" id="stats-container">
-        <!-- Row 1 -->
-        <div class="stat-card">
-          <div class="stat-value" id="stat-total">-</div>
-          <div class="stat-label" data-i18n="token.statTotal">Token 总数</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value text-green-600" id="stat-active">-</div>
-          <div class="stat-label" data-i18n="token.statActive">Token 正常</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value text-orange-500" id="stat-cooling">-</div>
-          <div class="stat-label" data-i18n="token.statCooling">Token 限流</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value text-red-600" id="stat-invalid">-</div>
-          <div class="stat-label" data-i18n="token.statInvalid">Token 失效</div>
-        </div>
-
-        <!-- Row 2 -->
         <div class="stat-card">
           <div class="stat-value" id="stat-chat-quota">-</div>
           <div class="stat-label" data-i18n="token.statChatQuota">Chat 剩余</div>
@@ -160,14 +141,13 @@
           </div>
         </div>
         <div class="overflow-x-auto">
-          <table class="geist-table min-w-[940px]">
+          <table class="geist-table min-w-[860px]">
             <thead>
               <tr>
                 <th class="w-10"><input type="checkbox" id="select-all" class="checkbox" onclick="toggleSelectAll()"></th>
                 <th class="w-56 text-left" data-i18n="token.tableToken">Token</th>
                 <th class="w-24" data-i18n="token.tableType">类型</th>
                 <th class="w-24" data-i18n="token.tableStatus">状态</th>
-                <th class="w-20 text-center">可用</th>
                 <th class="w-20" id="th-quota" data-i18n="token.tableQuota">额度</th>
                 <th class="text-left" data-i18n="token.tableNote">备注</th>
                 <th class="w-44 text-center" data-i18n="token.tableActions">操作</th>
@@ -207,10 +187,6 @@
       <button id="btn-batch-update" onclick="batchUpdate()"
         class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center" data-i18n="token.batchRefresh">
         刷新
-      </button>
-      <button id="btn-batch-alive" onclick="batchCheckAlive()"
-        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
-        检测可用
       </button>
       <button id="btn-batch-disable" onclick="batchDisableTokens()"
         class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center" data-i18n="token.batchDisable">
