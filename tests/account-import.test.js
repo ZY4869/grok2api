@@ -84,6 +84,23 @@ test("parseCsvText skips invalid blank-token rows", () => {
   assert.equal(parsed.entries[0].token, "token-1");
 });
 
+test("isCsvFile accepts csv extension and common csv mime types", () => {
+  assert.equal(accountImport.isCsvFile({ name: "tokens.csv", type: "" }), true);
+  assert.equal(accountImport.isCsvFile({ name: "tokens.txt", type: "text/csv" }), true);
+  assert.equal(accountImport.isCsvFile({ name: "tokens.txt", type: "application/vnd.ms-excel" }), true);
+  assert.equal(accountImport.isCsvFile({ name: "tokens.txt", type: "text/plain" }), false);
+});
+
+test("pickCsvFile returns the first csv-like file", () => {
+  const file = accountImport.pickCsvFile([
+    { name: "notes.txt", type: "text/plain" },
+    { name: "tokens.csv", type: "" },
+    { name: "another.csv", type: "text/csv" },
+  ]);
+
+  assert.deepEqual(file, { name: "tokens.csv", type: "" });
+});
+
 test("prepareImportPayload keeps existing fields and only schedules missing nsfw tags", () => {
   const prepared = accountImport.prepareImportPayload(
     {

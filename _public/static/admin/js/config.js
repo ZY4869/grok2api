@@ -31,6 +31,7 @@ const NUMERIC_FIELDS = new Set([
   'final_min_bytes',
   'medium_min_bytes',
   'blocked_parallel_attempts',
+  'auto_check_interval_hours',
   'concurrent',
   'batch_size'
 ]);
@@ -176,6 +177,13 @@ const LOCALE_MAP = {
     "concurrent": { title: "并发上限", desc: "批量刷新用量时的并发请求上限。推荐 10。" },
     "batch_size": { title: "批次大小", desc: "批量刷新用量的单批处理数量。推荐 50。" },
     "timeout": { title: "请求超时", desc: "用量查询接口的超时时间（秒）。推荐 60。" }
+  },
+
+  "account": {
+    "label": "账号检测",
+    "auto_check_enabled": { title: "启用定时检测", desc: "定时检测所有账号可用性。" },
+    "auto_check_interval_hours": { title: "检测间隔（小时）", desc: "定时检测执行的时间间隔。" },
+    "auto_clean_expired": { title: "自动清理失效账号", desc: "检测后自动删除已失效账号。" }
   }
 };
 
@@ -383,6 +391,7 @@ function renderConfig(data) {
     if (visibleKeys.length > 0) {
       const card = document.createElement('div');
       card.className = 'config-section';
+      card.id = `config-section-${section}`;
 
       const header = document.createElement('div');
       header.innerHTML = `<div class="config-section-title">${getSectionLabel(section)}</div>`;

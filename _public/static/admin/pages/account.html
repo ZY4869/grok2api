@@ -13,12 +13,15 @@
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="app-header"></div>
   <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in" style="padding-top: 5rem;">
-    <div class="flex justify-between items-center">
+    <div class="flex justify-between items-center flex-wrap gap-3">
       <div>
         <h2 class="text-2xl font-semibold">账号管理</h2>
-        <p class="text-[var(--accents-4)] mt-1 text-sm">账号存储与批量管理</p>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">账号存储、CSV 导入和批量管理</p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
+        <a href="/admin/config#config-section-account" class="geist-button-outline gap-2">
+          <span>定时检测设置</span>
+        </a>
         <button onclick="exportTokens()" class="geist-button-outline gap-2">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -37,7 +40,7 @@
         </button>
         <button onclick="addToken()" class="geist-button gap-2">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 5v14M5 12h14" />
+            <path d="M12 5v14M5 12h14"></path>
           </svg>
           <span>添加</span>
         </button>
@@ -69,7 +72,9 @@
       <table class="geist-table min-w-[900px]">
         <thead>
           <tr>
-            <th class="w-10"><input type="checkbox" id="select-all" class="checkbox" onclick="toggleSelectAll()"></th>
+            <th class="w-10">
+              <input type="checkbox" id="select-all" class="checkbox" onclick="toggleSelectAll()">
+            </th>
             <th class="w-56 text-left">Token</th>
             <th class="w-24 text-center">类型</th>
             <th class="w-20 text-center">可用</th>
@@ -109,7 +114,9 @@
               <input type="file" id="import-csv" accept=".csv" class="geist-input text-xs" onchange="handleCsvUpload(event)">
               <button onclick="downloadTemplate()" class="geist-button-outline text-xs px-3 whitespace-nowrap">下载模板</button>
             </div>
-            <p class="text-xs text-[var(--accents-4)] mt-1">CSV 格式：token,pool,nsfw,email（pool/nsfw/email 均可选）</p>
+            <p class="text-xs text-[var(--accents-4)] mt-1">
+              CSV 格式：token,pool,nsfw,email，其中 pool/nsfw/email 可选，页面任意位置也支持拖拽 CSV。
+            </p>
             <div id="import-csv-state" class="import-feedback hidden"></div>
           </div>
           <div>
@@ -136,7 +143,15 @@
       </div>
     </div>
   </main>
+
   <div id="app-footer"></div>
+
+  <div id="import-drop-overlay" class="csv-drop-overlay" aria-hidden="true">
+    <div class="csv-drop-overlay-card">
+      <div class="csv-drop-overlay-title">释放以上传 CSV</div>
+      <div class="csv-drop-overlay-desc">拖到账号管理页任意位置都可以识别，松开后会自动载入导入弹窗。</div>
+    </div>
+  </div>
 
   <script src="/static/i18n/i18n.js"></script>
   <script src="/static/common/js/admin-auth.js?v=1.7.0"></script>
@@ -144,7 +159,7 @@
   <script src="/static/common/js/footer.js?v=1.7.0"></script>
   <script src="/static/common/js/batch-sse.js"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/admin/js/account-import.js?v=1.7.0"></script>
-  <script src="/static/admin/js/account.js?v=1.7.0"></script>
+  <script src="/static/admin/js/account-import.js?v=1.7.1"></script>
+  <script src="/static/admin/js/account.js?v=1.7.1"></script>
 </body>
 </html>
