@@ -323,6 +323,65 @@ async function deleteSingle(token, pool) {
   });
 }
 
+// 导入功能
+function openImportModal() {
+  byId('import-modal').classList.remove('hidden');
+  byId('import-text').value = '';
+}
+function closeImportModal() {
+  byId('import-modal').classList.add('hidden');
+}
+async function submitImport() {
+  const pool = byId('import-pool').value;
+  const text = byId('import-text').value.trim();
+  if (!text) { showToast('请输入 Token', 'error'); return; }
+
+  const tokens = text.split('\n').map(l => l.trim()).filter(Boolean);
+  if (tokens.length === 0) { showToast('没有有效的 Token', 'error'); return; }
+
+  try {
+    // 获取现有数据
+    const res = await fetch('/v1/admin/tokens', { headers: buildAuthHeaders(apiKey) });
+    const data = await res.json();
+    const existing = data.tokens || {};
+
+    // 添加新 Token
+    if (!existing[pool]) existing[pool] = [];
+    const existingSet = new Set(existing[pool].map(t => typeof t === 'string' ? t : t.token));
+    let added = 0;
+    tokens.forEach(t => {
+      if (!existingSet.has(t)) {
+        existing[pool].push({ token: t });
+        existingSet.add(t);
+        added++;
+      }
+    });
+
+    const saveRes = await fetch('/v1/admin/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(apiKey) },
+      body: JSON.stringify(existing)
+    });
+
+    if (saveRes.ok) {
+      closeImportModal();
+      await loadAccountData();
+      showToast(`成功导入 ${added} 个 Token`, 'success');
+    } else {
+      showToast('导入失败', 'error');
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('请求失败', 'error');
+  }
+}
+
+function addToken() {
+  byId('import-modal').classList.remove('hidden');
+  byId('import-text').value = '';
+  byId('import-text').placeholder = '输入单个 Token...';
+}
+
 // 确认对话框
 function showConfirm(title, message, onConfirm) {
   byId('confirm-title').textContent = title;

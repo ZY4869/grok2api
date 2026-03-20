@@ -19,6 +19,22 @@
         <h2 class="text-2xl font-semibold">账号管理</h2>
         <p class="text-[var(--accents-4)] mt-1 text-sm">账号状态总览与批量管理</p>
       </div>
+      <div class="flex items-center gap-3">
+        <button onclick="openImportModal()" class="geist-button-outline gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span>导入</span>
+        </button>
+        <button onclick="addToken()" class="geist-button gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span>添加</span>
+        </button>
+      </div>
     </div>
 
     <!-- 三张统计大卡片 -->
@@ -108,6 +124,35 @@
       </table>
     </div>
     <div id="empty-state" class="hidden text-center py-12 text-[var(--accents-4)] text-sm">暂无账号数据</div>
+
+    <!-- 导入模态框 -->
+    <div id="import-modal" class="modal-overlay hidden">
+      <div class="modal-content modal-lg">
+        <div class="modal-header">
+          <h3 class="modal-title">批量导入 Token</h3>
+          <button onclick="closeImportModal()" class="modal-close">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <div class="space-y-4">
+          <div>
+            <label class="modal-label mb-1 block">目标 Pool</label>
+            <select id="import-pool" class="geist-input">
+              <option value="ssoBasic">ssoBasic</option>
+              <option value="ssoSuper">ssoSuper</option>
+            </select>
+          </div>
+          <div>
+            <label class="modal-label mb-1 block">Token 列表 (每行一个)</label>
+            <textarea id="import-text" class="geist-input font-mono h-48" placeholder="粘贴 Token，一行一个..."></textarea>
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <button onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
+            <button onclick="submitImport()" class="geist-button text-xs px-3">开始导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 确认对话框 -->
     <div id="confirm-overlay" class="modal-overlay hidden">
