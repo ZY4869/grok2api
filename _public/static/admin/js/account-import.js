@@ -273,16 +273,16 @@
   }
 
   function buildImportSummary(prepared, nsfwSummary) {
-    const segments = [
-      `Import complete: processed ${prepared.totalCount} token(s)`,
+    const parts = [
+      `processed ${prepared.totalCount}`,
       `added ${prepared.addedCount}`,
     ];
 
     if (prepared.existingCount > 0) {
-      segments.push(`existing ${prepared.existingCount}`);
+      parts.push(`existing ${prepared.existingCount}`);
     }
 
-    let message = segments.join(", ");
+    let message = `Import complete: ${parts.join(", ")}`;
     if (nsfwSummary) {
       message += `; NSFW ok ${nsfwSummary.ok}, fail ${nsfwSummary.fail}`;
     }
@@ -369,7 +369,7 @@
       container.classList.remove("hidden");
     }
 
-    function renderProgress(message, tone = "info") {
+    function renderProgress(message, tone) {
       const container = getNode("import-progress");
       if (!container) return;
 
@@ -381,16 +381,16 @@
       }
 
       container.textContent = message;
-      container.dataset.tone = tone;
+      container.dataset.tone = tone || "info";
       container.classList.remove("hidden");
     }
 
     function setDropOverlay(active) {
-      state.dropOverlayActive = active;
+      state.dropOverlayActive = Boolean(active);
       const overlay = getNode("import-drop-overlay");
       if (!overlay) return;
-      overlay.classList.toggle("is-active", active);
-      overlay.setAttribute("aria-hidden", active ? "false" : "true");
+      overlay.classList.toggle("is-active", state.dropOverlayActive);
+      overlay.setAttribute("aria-hidden", state.dropOverlayActive ? "false" : "true");
     }
 
     function setBusy(isBusy) {
@@ -428,13 +428,14 @@
       renderProgress("");
     }
 
-    function openModal(mode = "batch") {
+    function openModal(mode) {
       resetState();
 
       const textInput = getNode("import-text");
       if (textInput) {
         textInput.value = "";
-        textInput.placeholder = mode === "single" ? "Enter one token..." : "Paste tokens, one per line...";
+        textInput.placeholder =
+          mode === "single" ? "Enter one token..." : "Paste tokens, one per line...";
       }
 
       const modal = getImportModal();
@@ -446,7 +447,7 @@
       });
     }
 
-    function closeModal(force = false) {
+    function closeModal(force) {
       if (state.busy && !force) return;
 
       const modal = getImportModal();
@@ -474,7 +475,7 @@
       URL.revokeObjectURL(url);
     }
 
-    function loadCsvFile(file, source = "upload") {
+    function loadCsvFile(file, source) {
       if (!file) return Promise.resolve(false);
 
       return new Promise((resolve) => {
@@ -618,10 +619,7 @@
               const ok = readCount(message.ok, 0);
               const fail = readCount(message.fail, 0);
 
-              renderProgress(
-                `NSFW ${processed}/${total} (ok ${ok}, fail ${fail})...`,
-                "info"
-              );
+              renderProgress(`NSFW ${processed}/${total} (ok ${ok}, fail ${fail})...`, "info");
               return;
             }
 
