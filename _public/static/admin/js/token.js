@@ -320,6 +320,17 @@ function renderTable() {
     }
     tdStatus.innerHTML = statusHtml;
 
+    // Alive (Center)
+    const tdAlive = document.createElement('td');
+    tdAlive.className = 'text-center text-xs';
+    if (item.alive === true) {
+      tdAlive.innerHTML = '<span class="text-green-600" title="可用">&#10003;</span>';
+    } else if (item.alive === false) {
+      tdAlive.innerHTML = '<span class="text-red-600" title="不可用">&#10007;</span>';
+    } else {
+      tdAlive.innerHTML = '<span class="text-gray-400" title="未检测">-</span>';
+    }
+
     // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
@@ -371,6 +382,7 @@ function renderTable() {
     tr.appendChild(tdToken);
     tr.appendChild(tdType);
     tr.appendChild(tdStatus);
+    tr.appendChild(tdAlive);
     tr.appendChild(tdQuota);
     tr.appendChild(tdNote);
     tr.appendChild(tdActions);
@@ -868,6 +880,71 @@ async function refreshStatus(token) {
   }
 }
 
+
+async function checkAlive(token) {
+  try {
+    const res = await fetch('/v1/admin/tokens/alive', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ token: token })
+    });
+    const data = await res.json();
+    if (res.ok && data.status === 'success') {
+      const alive = data.results && data.results[token];
+      loadData();
+      if (alive === true) {
+        showToast('Token 可用', 'success');
+      } else if (alive === false) {
+        showToast('Token 不可用', 'error');
+      } else {
+        showToast('检测结果未知', 'info');
+      }
+    } else {
+      showToast('检测失败', 'error');
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('请求失败', 'error');
+  }
+}
+
+async function batchCheckAlive() {
+  const selected = flatTokens.filter(t => t._selected);
+  if (selected.length === 0) {
+    showToast(t('common.noSelection'), 'info');
+    return;
+  }
+  const tokens = selected.map(t => t.token);
+  try {
+    const res = await fetch('/v1/admin/tokens/alive', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens: tokens })
+    });
+    const data = await res.json();
+    if (res.ok && data.status === 'success') {
+      const results = data.results || {};
+      let okCount = 0, failCount = 0;
+      for (const [k, v] of Object.entries(results)) {
+        if (v === true) okCount++;
+        else failCount++;
+      }
+      loadData();
+      showToast(`检测完成: ${okCount} 可用, ${failCount} 不可用`, okCount > 0 ? 'success' : 'error');
+    } else {
+      showToast('批量检测失败', 'error');
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('请求失败', 'error');
+  }
+}
 
 async function startBatchRefresh() {
   if (isBatchProcessing) {

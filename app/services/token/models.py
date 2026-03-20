@@ -70,6 +70,10 @@ class TokenInfo(BaseModel):
     # 冷却管理
     last_sync_at: Optional[int] = None  # 上次同步时间
 
+    # 可用性检测
+    alive: Optional[bool] = None  # None=未检测, True=可用, False=不可用
+    last_alive_check_at: Optional[int] = None
+
     # 扩展
     tags: List[str] = Field(default_factory=list)
     note: str = ""

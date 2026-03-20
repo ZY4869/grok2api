@@ -609,8 +609,16 @@ class TokenManager:
             logger.warning(
                 f"Token {raw_token[:10]}...: API sync failed, error: {e}"
             )
-            # 如果不执行降级扣费（例如在刷新状态时），则直接返回 False 表示同步失败
+
+            # 降级：尝试健康检查确认 token 是否存活
             if not consume_on_fail:
+                alive = await self.check_alive(token_str)
+                if alive is True:
+                    logger.info(f"Token {raw_token[:10]}...: rate-limits failed but health check passed (alive)")
+                    return True
+                elif alive is False:
+                    logger.warning(f"Token {raw_token[:10]}...: health check confirmed expired")
+                    return False
                 return False
 
         # 降级：本地预估扣费
@@ -703,6 +711,53 @@ class TokenManager:
 
         logger.warning(f"Token {raw_token[:10]}...: not found for rate limit marking")
         return False
+
+    async def check_alive(self, token_str: str) -> Optional[bool]:
+        """
+        检测 Token 是否存活（不消耗额度）。
+
+        通过 /rest/assets 接口探测，200=存活，401=失效。
+
+        Args:
+            token_str: Token 字符串
+
+        Returns:
+            True=存活, False=失效, None=无法判断
+        """
+        from app.services.reverse.health_check import HealthCheckReverse, AliveStatus
+        from app.services.reverse.utils.session import ResettableSession
+        from datetime import datetime
+
+        raw_token = token_str.removeprefix("sso=")
+
+        browser = get_config("proxy.browser")
+        session_ctx = ResettableSession(impersonate=browser) if browser else ResettableSession()
+
+        async with session_ctx as session:
+            result = await HealthCheckReverse.check(session, raw_token)
+
+        now_ms = int(datetime.now().timestamp() * 1000)
+        alive = True if result == AliveStatus.ALIVE else (False if result == AliveStatus.EXPIRED else None)
+
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if token:
+                token.alive = alive
+                token.last_alive_check_at = now_ms
+                if result == AliveStatus.EXPIRED:
+                    token.record_fail(401, "health_check_expired")
+                    logger.warning(f"Token {raw_token[:10]}...: health check → expired")
+                elif result == AliveStatus.ALIVE:
+                    token.fail_count = 0
+                    logger.info(f"Token {raw_token[:10]}...: health check → alive")
+                else:
+                    logger.warning(f"Token {raw_token[:10]}...: health check → unknown")
+                self._track_token_change(token, pool.name, "state")
+                self._schedule_save()
+                return alive
+
+        logger.warning(f"Token {raw_token[:10]}...: not found for health check")
+        return None
 
     # ========== 管理功能 ==========
 

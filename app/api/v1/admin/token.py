@@ -240,6 +240,88 @@ async def refresh_tokens_async(data: dict):
     }
 
 
+@router.post("/tokens/alive", dependencies=[Depends(verify_app_key)])
+async def check_tokens_alive(data: dict):
+    """检测 Token 可用性（不消耗额度）"""
+    try:
+        mgr = await get_token_manager()
+        tokens = []
+        if isinstance(data.get("token"), str) and data["token"].strip():
+            tokens.append(data["token"].strip())
+        if isinstance(data.get("tokens"), list):
+            tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+
+        if not tokens:
+            raise HTTPException(status_code=400, detail="No tokens provided")
+
+        unique_tokens = list(dict.fromkeys(tokens))
+        results = {}
+        for t in unique_tokens:
+            alive = await mgr.check_alive(t)
+            results[t] = alive
+
+        await mgr._save(force=True)
+
+        return {"status": "success", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tokens/alive/async", dependencies=[Depends(verify_app_key)])
+async def check_tokens_alive_async(data: dict):
+    """异步批量检测 Token 可用性 + SSE 进度"""
+    mgr = await get_token_manager()
+    tokens = []
+    if isinstance(data.get("token"), str) and data["token"].strip():
+        tokens.append(data["token"].strip())
+    if isinstance(data.get("tokens"), list):
+        tokens.extend([str(t).strip() for t in data["tokens"] if str(t).strip()])
+
+    if not tokens:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    unique_tokens = list(dict.fromkeys(tokens))
+    task = create_task(len(unique_tokens))
+
+    async def _run():
+        try:
+            results = {}
+            ok_count = 0
+            fail_count = 0
+
+            for t in unique_tokens:
+                if task.cancelled:
+                    task.finish_cancelled()
+                    return
+                alive = await mgr.check_alive(t)
+                results[t] = alive
+                task.record(alive is True)
+                if alive is True:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+
+            await mgr._save(force=True)
+
+            task.finish({
+                "status": "success",
+                "summary": {"total": len(unique_tokens), "ok": ok_count, "fail": fail_count},
+                "results": results,
+            })
+        except Exception as e:
+            task.fail_task(str(e))
+        finally:
+            asyncio.create_task(expire_task(task.id, 300))
+
+    asyncio.create_task(_run())
+
+    return {
+        "status": "success",
+        "task_id": task.id,
+        "total": len(unique_tokens),
+    }
+
+
 @router.get("/batch/{task_id}/stream")
 async def batch_stream(task_id: str, request: Request):
     app_key = get_app_key()
