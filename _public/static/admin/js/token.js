@@ -164,7 +164,9 @@ function processTokens(data) {
             last_fail_at: t.last_fail_at,
             last_fail_reason: t.last_fail_reason,
             last_sync_at: t.last_sync_at,
-            last_asset_clear_at: t.last_asset_clear_at
+            last_asset_clear_at: t.last_asset_clear_at,
+            alive: t.alive != null ? t.alive : null,
+            last_alive_check_at: t.last_alive_check_at
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
