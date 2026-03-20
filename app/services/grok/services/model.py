@@ -36,12 +36,55 @@ class ModelInfo(BaseModel):
     is_image: bool = False
     is_image_edit: bool = False
     is_video: bool = False
+    use_mode_id: bool = False
 
 
 class ModelService:
     """模型管理服务"""
 
     MODELS = [
+        # ── 快捷模式（与 Grok 网页一致，使用 modeId 方式请求）──
+        ModelInfo(
+            model_id="auto",
+            grok_model="",
+            model_mode="auto",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="Auto",
+            description="Automatically chooses Fast or Expert",
+            use_mode_id=True,
+        ),
+        ModelInfo(
+            model_id="fast",
+            grok_model="grok-3",
+            model_mode="fast",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="Fast",
+            description="Quick responses - Grok 4.20",
+            use_mode_id=True,
+        ),
+        ModelInfo(
+            model_id="expert",
+            grok_model="grok-4",
+            model_mode="expert",
+            tier=Tier.BASIC,
+            cost=Cost.HIGH,
+            display_name="Expert",
+            description="Thinks hard - Grok 4.20",
+            use_mode_id=True,
+        ),
+        ModelInfo(
+            model_id="heavy",
+            grok_model="grok-4",
+            model_mode="heavy",
+            tier=Tier.SUPER,
+            cost=Cost.HIGH,
+            display_name="Heavy",
+            description="SuperGrok Heavy - Grok 4.20",
+            use_mode_id=True,
+        ),
+        # ── 具体模型（旧接口，使用 modelName + modelMode 方式请求）──
         ModelInfo(
             model_id="grok-3",
             grok_model="grok-3",
@@ -49,31 +92,6 @@ class ModelService:
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-3",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-3-mini",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_GROK_3_MINI_THINKING",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-3-MINI",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-3-thinking",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_GROK_3_THINKING",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-3-THINKING",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-4",
@@ -82,20 +100,14 @@ class ModelService:
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="GROK-4",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-4-thinking",
             grok_model="grok-4",
             model_mode="MODEL_MODE_GROK_4_THINKING",
             tier=Tier.BASIC,
-            cost=Cost.LOW,
+            cost=Cost.HIGH,
             display_name="GROK-4-THINKING",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-4-heavy",
@@ -104,111 +116,42 @@ class ModelService:
             tier=Tier.SUPER,
             cost=Cost.HIGH,
             display_name="GROK-4-HEAVY",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
         ),
-        ModelInfo(
-            model_id="grok-4.1-mini",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_GROK_4_1_MINI_THINKING",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-4.1-MINI",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-4.1-fast",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_FAST",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-4.1-FAST",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-4.1-expert",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_EXPERT",
-            tier=Tier.BASIC,
-            cost=Cost.HIGH,
-            display_name="GROK-4.1-EXPERT",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-4.1-thinking",
-            grok_model="grok-4-1-thinking-1129",
-            model_mode="MODEL_MODE_GROK_4_1_THINKING",
-            tier=Tier.BASIC,
-            cost=Cost.HIGH,
-            display_name="GROK-4.1-THINKING",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
-        ModelInfo(
-            model_id="grok-4.20-beta",
-            grok_model="grok-420",
-            model_mode="MODEL_MODE_GROK_420",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-4.20-BETA",
-            is_image=False,
-            is_image_edit=False,
-            is_video=False,
-        ),
+        # ── 图片 / 视频模型 ──
         ModelInfo(
             model_id="grok-imagine-1.0-fast",
             grok_model="grok-3",
             model_mode="MODEL_MODE_FAST",
-            tier=Tier.BASIC,
             cost=Cost.HIGH,
             display_name="Grok Image Fast",
             description="Imagine waterfall image generation model for chat completions",
             is_image=True,
-            is_image_edit=False,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-imagine-1.0",
             grok_model="grok-3",
             model_mode="MODEL_MODE_FAST",
-            tier=Tier.BASIC,
             cost=Cost.HIGH,
             display_name="Grok Image",
             description="Image generation model",
             is_image=True,
-            is_image_edit=False,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-imagine-1.0-edit",
             grok_model="imagine-image-edit",
             model_mode="MODEL_MODE_FAST",
-            tier=Tier.BASIC,
             cost=Cost.HIGH,
             display_name="Grok Image Edit",
             description="Image edit model",
-            is_image=False,
             is_image_edit=True,
-            is_video=False,
         ),
         ModelInfo(
             model_id="grok-imagine-1.0-video",
             grok_model="grok-3",
             model_mode="MODEL_MODE_FAST",
-            tier=Tier.BASIC,
             cost=Cost.HIGH,
             display_name="Grok Video",
             description="Video generation model",
-            is_image=False,
-            is_image_edit=False,
             is_video=True,
         ),
     ]
@@ -229,6 +172,12 @@ class ModelService:
     def valid(cls, model_id: str) -> bool:
         """模型是否有效"""
         return model_id in cls._map
+
+    @classmethod
+    def is_mode_id(cls, model_id: str) -> bool:
+        """是否为快捷模式（使用 modeId 方式请求）"""
+        model = cls.get(model_id)
+        return model.use_mode_id if model else False
 
     @classmethod
     def to_grok(cls, model_id: str) -> Tuple[str, str]:

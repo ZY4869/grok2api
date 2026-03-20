@@ -94,7 +94,8 @@ class RateLimitsReverse:
                             is_token_expired = True
                     # --- 识别逻辑结束 ---
 
-                    logger.error(
+                    log_fn = logger.error if is_token_expired or is_cloudflare else logger.warning
+                    log_fn(
                         "RateLimitsReverse: Request failed, status={}, is_token_expired={}, is_cloudflare={}, Body: {}",
                         response.status_code,
                         is_token_expired,

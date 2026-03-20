@@ -262,13 +262,14 @@ class GrokChatService:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        use_mode_id: bool = False,
     ):
         """发送聊天请求"""
         if stream is None:
             stream = get_config("app.stream")
 
         logger.debug(
-            f"Chat request: model={model}, mode={mode}, stream={stream}, attachments={len(file_attachments or [])}"
+            f"Chat request: model={model}, mode={mode}, stream={stream}, use_mode_id={use_mode_id}, attachments={len(file_attachments or [])}"
         )
 
         browser = get_config("proxy.browser")
@@ -285,6 +286,7 @@ class GrokChatService:
                 file_attachments=file_attachments,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
+                use_mode_id=use_mode_id,
             )
             logger.info(f"Chat connected: model={model}, stream={stream}")
         except Exception:
@@ -324,6 +326,7 @@ class GrokChatService:
 
         grok_model = model_info.grok_model
         mode = model_info.model_mode
+        use_mode_id = model_info.use_mode_id
         # 提取消息和附件
         message, file_attachments, image_attachments = MessageExtractor.extract(
             messages, tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls
@@ -371,6 +374,7 @@ class GrokChatService:
             file_attachments=all_attachments,
             tool_overrides=None,
             model_config_override=model_config_override,
+            use_mode_id=use_mode_id,
         )
 
         return response, stream, model

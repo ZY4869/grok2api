@@ -54,6 +54,7 @@ class AppChatReverse:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        use_mode_id: bool = False,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
 
@@ -83,11 +84,6 @@ class AppChatReverse:
             "isAsyncChat": False,
             "isReasoning": False,
             "message": message,
-            "modelMode": mode,
-            "modelName": model,
-            "responseMetadata": {
-                "requestModelDetails": {"modelId": model},
-            },
             "returnImageBytes": False,
             "returnRawGrokInXaiRequest": False,
             "sendFinalMetadata": True,
@@ -95,8 +91,20 @@ class AppChatReverse:
             "toolOverrides": tool_overrides or {},
         }
 
-        if model == "grok-420":
-            payload["enable420"] = True
+        if use_mode_id:
+            # 快捷模式：使用 modeId 方式（与 Grok 网页一致）
+            payload["modeId"] = mode
+            payload["enable420"] = False
+            payload["responseMetadata"] = {}
+        else:
+            # 旧接口：使用 modelName + modelMode 方式
+            payload["modelName"] = model
+            payload["modelMode"] = mode
+            payload["responseMetadata"] = {
+                "requestModelDetails": {"modelId": model},
+            }
+            if model == "grok-420":
+                payload["enable420"] = True
 
         custom_personality = AppChatReverse._resolve_custom_personality()
         if custom_personality is not None:
@@ -120,9 +128,10 @@ class AppChatReverse:
         file_attachments: List[str] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
+        use_mode_id: bool = False,
     ) -> Any:
         """Send app chat request to Grok.
-        
+
         Args:
             session: AsyncSession, the session to use for the request.
             token: str, the SSO token.
@@ -132,6 +141,7 @@ class AppChatReverse:
             file_attachments: List[str], the file attachments to send.
             tool_overrides: Dict[str, Any], the tool overrides to use.
             model_config_override: Dict[str, Any], the model config override to use.
+            use_mode_id: bool, use modeId-based request format.
 
         Returns:
             Any: The response from the request.
@@ -153,6 +163,7 @@ class AppChatReverse:
                 file_attachments=file_attachments,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
+                use_mode_id=use_mode_id,
             )
             payload_summary = {
                 "model": payload.get("modelName"),
