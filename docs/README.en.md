@@ -28,7 +28,7 @@ uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 main:app
 ### Docker Compose
 
 ```bash
-git clone https://github.com/chenyme/grok2api
+git clone https://github.com/ZY4869/grok2api
 
 cd grok2api
 
@@ -46,7 +46,7 @@ docker compose up -d
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/chenyme/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ZY4869/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
 
 > Set `DATA_DIR=/tmp/data` and disable file logs with `LOG_FILE_ENABLED=false`.
 >
@@ -54,7 +54,7 @@ docker compose up -d
 
 ### Render
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chenyme/grok2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ZY4869/grok2api)
 
 > Render free instances sleep after 15 minutes of inactivity; redeploy/restart will lose data.
 >
@@ -473,6 +473,6 @@ Config file: `data/config.toml`
 
 <br>
 
-## Star History
+## Credits
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Chenyme/grok2api&type=Timeline)](https://star-history.com/#Chenyme/grok2api&Timeline)
+Fork from [chenyme/grok2api](https://github.com/chenyme/grok2api)

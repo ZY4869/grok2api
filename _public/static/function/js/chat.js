@@ -38,7 +38,7 @@
   let abortController = null;
   let attachment = null;
   let activeStreamInfo = null;
-  const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
+  const feedbackUrl = 'https://github.com/ZY4869/grok2api/issues/new';
   const CHAT_COMPLETIONS_ENDPOINT = '/v1/function/chat/completions';
   const DEFAULT_SESSION_TITLES = ['新会话', 'New Session'];
 
