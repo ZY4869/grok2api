@@ -84,31 +84,6 @@ class ModelService:
             description="SuperGrok Heavy (grok-4)",
             use_mode_id=True,
         ),
-        # ── 具体模型（旧接口，使用 modelName + modelMode 方式请求）──
-        ModelInfo(
-            model_id="grok-3",
-            grok_model="grok-3",
-            model_mode="MODEL_MODE_GROK_3",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-3",
-        ),
-        ModelInfo(
-            model_id="grok-4",
-            grok_model="grok-4",
-            model_mode="MODEL_MODE_GROK_4",
-            tier=Tier.BASIC,
-            cost=Cost.LOW,
-            display_name="GROK-4",
-        ),
-        ModelInfo(
-            model_id="grok-4-thinking",
-            grok_model="grok-4",
-            model_mode="MODEL_MODE_GROK_4_THINKING",
-            tier=Tier.BASIC,
-            cost=Cost.HIGH,
-            display_name="GROK-4-THINKING",
-        ),
         # ── 图片 / 视频模型 ──
         ModelInfo(
             model_id="grok-imagine-1.0-fast",
