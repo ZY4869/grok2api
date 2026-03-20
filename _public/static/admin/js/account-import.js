@@ -135,8 +135,8 @@
     return lines
       .map((line) => {
         const separatorIndex = line.indexOf(":");
-        let token = line;
         let pool = defaultPool;
+        let token = line;
 
         if (separatorIndex > 0) {
           const candidatePool = line.slice(0, separatorIndex).trim();
@@ -274,17 +274,17 @@
 
   function buildImportSummary(prepared, nsfwSummary) {
     const segments = [
-      `导入完成：共处理 ${prepared.totalCount} 个 Token`,
-      `新增 ${prepared.addedCount} 个`,
+      `Import complete: processed ${prepared.totalCount} token(s)`,
+      `added ${prepared.addedCount}`,
     ];
 
     if (prepared.existingCount > 0) {
-      segments.push(`已存在 ${prepared.existingCount} 个`);
+      segments.push(`existing ${prepared.existingCount}`);
     }
 
-    let message = segments.join("，");
+    let message = segments.join(", ");
     if (nsfwSummary) {
-      message += `；NSFW 成功 ${nsfwSummary.ok}，失败 ${nsfwSummary.fail}`;
+      message += `; NSFW ok ${nsfwSummary.ok}, fail ${nsfwSummary.fail}`;
     }
 
     return message;
@@ -356,16 +356,16 @@
       }
 
       const nsfwCount = state.csvEntries.filter((entry) => entry.nsfwRequested).length;
-      const parts = [`已加载 CSV：有效 ${state.csvEntries.length} 条`];
+      const parts = [`CSV loaded: ${state.csvEntries.length}`];
 
       if (nsfwCount > 0) {
-        parts.push(`标记 NSFW ${nsfwCount} 条`);
+        parts.push(`NSFW ${nsfwCount}`);
       }
       if (state.csvMeta.skippedLines > 0) {
-        parts.push(`跳过 ${state.csvMeta.skippedLines} 行`);
+        parts.push(`skipped ${state.csvMeta.skippedLines}`);
       }
 
-      container.textContent = parts.join("，");
+      container.textContent = parts.join(", ");
       container.classList.remove("hidden");
     }
 
@@ -434,8 +434,7 @@
       const textInput = getNode("import-text");
       if (textInput) {
         textInput.value = "";
-        textInput.placeholder =
-          mode === "single" ? "输入单个 Token..." : "粘贴 Token，一行一个...";
+        textInput.placeholder = mode === "single" ? "Enter one token..." : "Paste tokens, one per line...";
       }
 
       const modal = getImportModal();
@@ -450,8 +449,8 @@
     function closeModal(force = false) {
       if (state.busy && !force) return;
 
-      resetState();
       const modal = getImportModal();
+      resetState();
       if (!modal) return;
 
       modal.classList.remove("is-open");
@@ -490,14 +489,14 @@
           };
           renderCsvState();
           showToast(
-            `${source === "drag" ? "拖拽" : "上传"}已识别 ${file.name || "CSV"}，有效 ${parsed.entries.length} 条`,
+            `${source === "drag" ? "Drag" : "Upload"} loaded ${file.name || "CSV"} (${parsed.entries.length})`,
             "success"
           );
           resolve(true);
         };
 
         reader.onerror = () => {
-          showToast("CSV 读取失败", "error");
+          showToast("Failed to read CSV", "error");
           resolve(false);
         };
 
@@ -512,7 +511,7 @@
       if (!file) {
         clearCsvState();
         if (event.target && event.target.files && event.target.files.length > 0) {
-          showToast("仅支持上传 CSV 文件", "warning");
+          showToast("Only CSV files are supported", "warning");
         }
         return;
       }
@@ -548,23 +547,26 @@
 
     async function handleGlobalDrop(event) {
       if (!hasFilePayload(event)) return;
-      event.preventDefault();
 
+      event.preventDefault();
       state.dragDepth = 0;
       setDropOverlay(false);
 
       if (state.busy) {
-        showToast("导入进行中，请稍候", "warning");
+        showToast("Import is in progress", "warning");
         return;
       }
 
       const file = pickCsvFile(event.dataTransfer && event.dataTransfer.files);
       if (!file) {
-        showToast("仅支持拖拽 CSV 文件", "warning");
+        showToast("Only CSV files are supported", "warning");
         return;
       }
 
-      if (!isModalOpen()) openModal("batch");
+      if (!isModalOpen()) {
+        openModal("batch");
+      }
+
       await loadCsvFile(file, "drag");
     }
 
@@ -578,7 +580,7 @@
 
     async function runNsfwBatch(prepared) {
       if (!global.BatchSSE) {
-        throw new Error("Batch SSE 不可用");
+        throw new Error("Batch SSE is unavailable");
       }
 
       const response = await fetch("/v1/admin/tokens/nsfw/enable/async", {
@@ -595,13 +597,10 @@
         throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
       }
       if (!data || data.status !== "success" || !data.task_id) {
-        throw new Error("未返回有效的 NSFW 任务信息");
+        throw new Error("Missing NSFW task id");
       }
 
-      renderProgress(
-        `Token 已导入，正在为 ${prepared.nsfwTargets.length} 个账号开启 NSFW...`,
-        "info"
-      );
+      renderProgress(`Enabling NSFW for ${prepared.nsfwTargets.length} account(s)...`, "info");
 
       return new Promise((resolve, reject) => {
         const finish = (handler, value) => {
@@ -620,7 +619,7 @@
               const fail = readCount(message.fail, 0);
 
               renderProgress(
-                `Token 已导入，正在开启 NSFW ${processed}/${total}（成功 ${ok}，失败 ${fail}）...`,
+                `NSFW ${processed}/${total} (ok ${ok}, fail ${fail})...`,
                 "info"
               );
               return;
@@ -636,16 +635,16 @@
             }
 
             if (message.type === "cancelled") {
-              finish(reject, new Error("NSFW 任务已取消"));
+              finish(reject, new Error("NSFW task cancelled"));
               return;
             }
 
             if (message.type === "error") {
-              finish(reject, new Error(message.error || "NSFW 任务失败"));
+              finish(reject, new Error(message.error || "NSFW task failed"));
             }
           },
           onError() {
-            finish(reject, new Error("NSFW 任务连接中断"));
+            finish(reject, new Error("NSFW stream disconnected"));
           },
         });
       });
@@ -666,12 +665,12 @@
       const entries = mergeImportEntries(textEntries, csvEntries);
 
       if (entries.length === 0) {
-        showToast("请输入 Token 或上传 CSV", "error");
+        showToast("Please enter tokens or upload a CSV file", "error");
         return;
       }
 
       setBusy(true);
-      renderProgress(`正在导入 ${entries.length} 个 Token...`, "info");
+      renderProgress(`Importing ${entries.length} token(s)...`, "info");
 
       try {
         const tokensResponse = await fetch("/v1/admin/tokens", {
@@ -712,7 +711,7 @@
             toastMessage = buildImportSummary(prepared, nsfwSummary);
             toastTone = nsfwSummary.fail > 0 ? "warning" : "success";
           } catch (error) {
-            toastMessage = `Token 已导入，但 NSFW 处理失败：${error.message}`;
+            toastMessage = `Import succeeded, but NSFW failed: ${error.message}`;
             toastTone = "warning";
           }
         }
@@ -723,8 +722,8 @@
       } catch (error) {
         console.error(error);
         setBusy(false);
-        renderProgress(`导入失败：${error.message}`, "error");
-        showToast(`导入失败：${error.message}`, "error");
+        renderProgress(`Import failed: ${error.message}`, "error");
+        showToast(`Import failed: ${error.message}`, "error");
       }
     }
 
