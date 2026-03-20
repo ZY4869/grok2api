@@ -13,7 +13,6 @@
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="app-header"></div>
   <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in" style="padding-top: 5rem;">
-    <!-- 标题 -->
     <div class="flex justify-between items-center">
       <div>
         <h2 class="text-2xl font-semibold">账号管理</h2>
@@ -45,23 +44,27 @@
       </div>
     </div>
 
-    <!-- 操作按钮栏 -->
     <div class="flex items-center gap-3 flex-wrap">
       <button onclick="checkAllAlive()" class="geist-button gap-2" id="btn-check-all">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
         全部检测
       </button>
       <button onclick="batchEnable()" class="geist-button-outline gap-2 text-xs px-3">启用选中</button>
       <button onclick="batchDisable()" class="geist-button-outline gap-2 text-xs px-3">禁用选中</button>
       <button onclick="batchEnableNSFW()" class="geist-button-outline gap-2 text-xs px-3">开启 NSFW</button>
       <button onclick="cleanExpired()" class="geist-button-danger gap-2" id="btn-clean">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
         清理失效
       </button>
       <div id="check-progress" class="hidden text-xs text-[var(--accents-4)] ml-2"></div>
     </div>
 
-    <!-- 账号列表表格 -->
     <div class="overflow-x-auto">
       <table class="geist-table min-w-[900px]">
         <thead>
@@ -76,19 +79,20 @@
             <th class="w-32 text-center">操作</th>
           </tr>
         </thead>
-        <tbody id="account-table-body">
-        </tbody>
+        <tbody id="account-table-body"></tbody>
       </table>
     </div>
     <div id="empty-state" class="hidden text-center py-12 text-[var(--accents-4)] text-sm">暂无账号数据</div>
 
-    <!-- 导入模态框 -->
     <div id="import-modal" class="modal-overlay hidden">
       <div class="modal-content modal-lg">
         <div class="modal-header">
           <h3 class="modal-title">导入 Token</h3>
           <button onclick="closeImportModal()" class="modal-close">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
           </button>
         </div>
         <div class="space-y-4">
@@ -105,23 +109,24 @@
               <input type="file" id="import-csv" accept=".csv" class="geist-input text-xs" onchange="handleCsvUpload(event)">
               <button onclick="downloadTemplate()" class="geist-button-outline text-xs px-3 whitespace-nowrap">下载模板</button>
             </div>
-            <p class="text-xs text-[var(--accents-4)] mt-1">CSV 格式：token,pool（pool 列可选，为空则使用上方选择的 Pool）</p>
+            <p class="text-xs text-[var(--accents-4)] mt-1">CSV 格式：token,pool,nsfw,email（pool/nsfw/email 均可选）</p>
+            <div id="import-csv-state" class="import-feedback hidden"></div>
           </div>
           <div>
             <label class="modal-label mb-1 block">或粘贴 Token（每行一个）</label>
             <textarea id="import-text" class="geist-input font-mono h-36" placeholder="粘贴 Token，一行一个..."></textarea>
           </div>
+          <div id="import-progress" class="import-progress hidden" data-tone="info"></div>
           <div class="flex justify-end gap-2 pt-2">
-            <button onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
-            <button onclick="submitImport()" class="geist-button text-xs px-3">开始导入</button>
+            <button id="import-cancel-btn" onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
+            <button id="import-submit-btn" onclick="submitImport()" class="geist-button text-xs px-3">开始导入</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 确认对话框 -->
     <div id="confirm-overlay" class="modal-overlay hidden">
-      <div class="modal-content" style="max-width:400px;">
+      <div class="modal-content" style="max-width: 400px;">
         <h3 class="modal-title" id="confirm-title">确认操作</h3>
         <p class="text-sm text-[var(--accents-4)]" id="confirm-message"></p>
         <div class="modal-actions">
@@ -137,7 +142,9 @@
   <script src="/static/common/js/admin-auth.js?v=1.7.0"></script>
   <script src="/static/common/js/header.js?v=1.7.0"></script>
   <script src="/static/common/js/footer.js?v=1.7.0"></script>
+  <script src="/static/common/js/batch-sse.js"></script>
   <script src="/static/common/js/toast.js"></script>
+  <script src="/static/admin/js/account-import.js?v=1.7.0"></script>
   <script src="/static/admin/js/account.js?v=1.7.0"></script>
 </body>
 </html>

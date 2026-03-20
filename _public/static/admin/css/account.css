@@ -24,3 +24,53 @@
   font-size: 13px;
   color: var(--accents-4);
 }
+
+.import-feedback,
+.import-progress {
+  margin-top: 10px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.import-feedback {
+  color: var(--accents-5);
+  background: #f8fafc;
+  border: 1px solid var(--border);
+}
+
+.import-progress {
+  border: 1px solid transparent;
+}
+
+.import-progress[data-tone="info"] {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #334155;
+}
+
+.import-progress[data-tone="success"] {
+  background: #ecfdf3;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+
+.import-progress[data-tone="warning"] {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #b45309;
+}
+
+.import-progress[data-tone="error"] {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+}

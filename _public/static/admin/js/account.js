@@ -1,6 +1,7 @@
 let apiKey = '';
 let allTokens = [];
 let pendingConfirmFn = null;
+let importController = null;
 
 function byId(id) { return document.getElementById(id); }
 
@@ -17,9 +18,24 @@ function formatTime(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function ensureImportController() {
+  if (importController || !window.AccountImport) return importController;
+
+  importController = window.AccountImport.createController({
+    byId,
+    getApiKey: () => apiKey,
+    getAuthHeaders: () => buildAuthHeaders(apiKey),
+    onReload: loadAccountData,
+    showToast,
+  });
+
+  return importController;
+}
+
 async function init() {
   apiKey = await ensureAdminKey();
   if (apiKey === null) return;
+  ensureImportController();
   await loadAccountData();
 }
 
@@ -578,6 +594,36 @@ function closeConfirm() {
 function confirmAction() {
   closeConfirm();
   if (pendingConfirmFn) pendingConfirmFn();
+}
+
+function openImportModal() {
+  const controller = ensureImportController();
+  if (controller) controller.openModal('batch');
+}
+
+function closeImportModal() {
+  const controller = ensureImportController();
+  if (controller) controller.closeModal();
+}
+
+function addToken() {
+  const controller = ensureImportController();
+  if (controller) controller.openModal('single');
+}
+
+function handleCsvUpload(event) {
+  const controller = ensureImportController();
+  if (controller) controller.handleCsvUpload(event);
+}
+
+function downloadTemplate() {
+  const controller = ensureImportController();
+  if (controller) controller.downloadTemplate();
+}
+
+async function submitImport() {
+  const controller = ensureImportController();
+  if (controller) await controller.submitImport();
 }
 
 window.onload = init;
