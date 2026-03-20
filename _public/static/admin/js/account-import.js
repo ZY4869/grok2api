@@ -292,7 +292,10 @@
 
   function isCsvFile(file) {
     if (!file) return false;
+<<<<<<< HEAD
 
+=======
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
     const name = String(file.name || "").trim().toLowerCase();
     const type = String(file.type || "").trim().toLowerCase();
 
@@ -308,11 +311,14 @@
     return Array.from(files || []).find((file) => isCsvFile(file)) || null;
   }
 
+<<<<<<< HEAD
   function readCount(value, fallback) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
   }
 
+=======
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
   function createController(options) {
     const byId = options.byId || ((id) => document.getElementById(id));
     const showToast = options.showToast || (() => {});
@@ -325,12 +331,20 @@
       dropOverlayActive: false,
     };
 
+<<<<<<< HEAD
     function getNode(id) {
       return byId(id);
     }
 
     function getImportModal() {
       return getNode("import-modal");
+=======
+    const byId = options.byId || ((id) => document.getElementById(id));
+    const showToast = options.showToast || (() => {});
+
+    function getImportModal() {
+      return byId("import-modal");
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
     }
 
     function isModalOpen() {
@@ -387,11 +401,21 @@
 
     function setDropOverlay(active) {
       state.dropOverlayActive = active;
+<<<<<<< HEAD
       const overlay = getNode("import-drop-overlay");
       if (!overlay) return;
       overlay.classList.toggle("is-active", active);
       overlay.setAttribute("aria-hidden", active ? "false" : "true");
     }
+=======
+      const overlay = byId("import-drop-overlay");
+      if (!overlay) return;
+      overlay.classList.toggle("is-active", active);
+    }
+
+    function setBusy(isBusy) {
+      state.busy = isBusy;
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
 
     function setBusy(isBusy) {
       state.busy = Boolean(isBusy);
@@ -450,7 +474,10 @@
     function closeModal(force = false) {
       if (state.busy && !force) return;
 
+<<<<<<< HEAD
       resetState();
+=======
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       const modal = getImportModal();
       if (!modal) return;
 
@@ -481,8 +508,13 @@
       return new Promise((resolve) => {
         const reader = new FileReader();
 
+<<<<<<< HEAD
         reader.onload = (event) => {
           const parsed = parseCsvText(event.target && event.target.result);
+=======
+        reader.onload = (loadEvent) => {
+          const parsed = parseCsvText(loadEvent.target && loadEvent.target.result);
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
           state.csvEntries = parsed.entries;
           state.csvMeta = {
             totalLines: parsed.totalLines,
@@ -522,6 +554,10 @@
 
     function handleGlobalDragEnter(event) {
       if (!hasFilePayload(event) || state.busy) return;
+<<<<<<< HEAD
+=======
+
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       event.preventDefault();
       state.dragDepth += 1;
       setDropOverlay(true);
@@ -529,6 +565,10 @@
 
     function handleGlobalDragOver(event) {
       if (!hasFilePayload(event) || state.busy) return;
+<<<<<<< HEAD
+=======
+
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       if (!state.dropOverlayActive) setDropOverlay(true);
@@ -536,6 +576,10 @@
 
     function handleGlobalDragLeave(event) {
       if (!hasFilePayload(event) || state.busy) return;
+<<<<<<< HEAD
+=======
+
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       event.preventDefault();
       state.dragDepth = Math.max(0, state.dragDepth - 1);
       if (state.dragDepth === 0) setDropOverlay(false);
@@ -548,8 +592,13 @@
 
     async function handleGlobalDrop(event) {
       if (!hasFilePayload(event)) return;
+<<<<<<< HEAD
       event.preventDefault();
 
+=======
+
+      event.preventDefault();
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       state.dragDepth = 0;
       setDropOverlay(false);
 
@@ -564,7 +613,14 @@
         return;
       }
 
+<<<<<<< HEAD
       if (!isModalOpen()) openModal("batch");
+=======
+      if (!isModalOpen()) {
+        openModal("batch");
+      }
+
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       await loadCsvFile(file, "drag");
     }
 
@@ -655,11 +711,19 @@
       if (state.busy) return;
 
       const defaultPool = normalizePool(
+<<<<<<< HEAD
         getNode("import-pool") && getNode("import-pool").value,
         "ssoBasic"
       );
       const textEntries = parseTokenText(
         getNode("import-text") && getNode("import-text").value,
+=======
+        byId("import-pool") && byId("import-pool").value,
+        "ssoBasic"
+      );
+      const textEntries = parseTokenText(
+        byId("import-text") && byId("import-text").value,
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
         defaultPool
       );
       const csvEntries = resolveEntryPools(state.csvEntries, defaultPool);
@@ -703,6 +767,7 @@
           );
         }
 
+<<<<<<< HEAD
         let toastMessage = buildImportSummary(prepared);
         let toastTone = "success";
 
@@ -720,6 +785,28 @@
         await options.onReload();
         closeModal(true);
         showToast(toastMessage, toastTone);
+=======
+        if (prepared.nsfwTargets.length === 0) {
+          await options.onReload();
+          closeModal(true);
+          showToast(buildImportSummary(prepared), "success");
+          return;
+        }
+
+        try {
+          const nsfwSummary = await runNsfwBatch(prepared);
+          await options.onReload();
+          closeModal(true);
+          showToast(
+            buildImportSummary(prepared, nsfwSummary),
+            nsfwSummary.fail > 0 ? "warning" : "success"
+          );
+        } catch (error) {
+          await options.onReload();
+          closeModal(true);
+          showToast(`Token 已导入，但 NSFW 处理失败：${error.message}`, "warning");
+        }
+>>>>>>> 31588b11cf5268140cf468dc7a901ace4f711dcf
       } catch (error) {
         console.error(error);
         setBusy(false);
