@@ -357,7 +357,9 @@ async function deleteSingle(token, pool) {
 // ========== 导入功能 ==========
 
 function openImportModal() {
-  byId('import-modal').classList.remove('hidden');
+  const modal = byId('import-modal');
+  modal.classList.remove('hidden');
+  requestAnimationFrame(() => modal.classList.add('is-open'));
   byId('import-text').value = '';
   byId('import-text').placeholder = '粘贴 Token，一行一个...';
   const csvInput = byId('import-csv');
@@ -365,7 +367,9 @@ function openImportModal() {
 }
 
 function closeImportModal() {
-  byId('import-modal').classList.add('hidden');
+  const modal = byId('import-modal');
+  modal.classList.remove('is-open');
+  setTimeout(() => modal.classList.add('hidden'), 200);
 }
 
 function addToken() {
@@ -483,11 +487,15 @@ function exportTokens() {
 function showConfirm(title, message, onConfirm) {
   byId('confirm-title').textContent = title;
   byId('confirm-message').textContent = message;
-  byId('confirm-overlay').classList.remove('hidden');
+  const modal = byId('confirm-overlay');
+  modal.classList.remove('hidden');
+  requestAnimationFrame(() => modal.classList.add('is-open'));
   pendingConfirmFn = onConfirm;
 }
 function closeConfirm() {
-  byId('confirm-overlay').classList.add('hidden');
+  const modal = byId('confirm-overlay');
+  modal.classList.remove('is-open');
+  setTimeout(() => modal.classList.add('hidden'), 200);
   pendingConfirmFn = null;
 }
 function confirmAction() {
