@@ -94,8 +94,79 @@ class TokenRefreshScheduler:
         logger.info("Scheduler: stopped")
 
 
+class AccountCheckScheduler:
+    """账号可用性定时检测调度器"""
+
+    def __init__(self):
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+
+    async def _check_loop(self):
+        from app.core.config import get_config
+
+        while self._running:
+            try:
+                enabled = get_config("account.auto_check_enabled", False)
+                interval_hours = get_config("account.auto_check_interval_hours", 2)
+                auto_clean = get_config("account.auto_clean_expired", False)
+                interval_seconds = max(int(interval_hours) * 3600, 600)
+
+                if not enabled:
+                    await asyncio.sleep(60)
+                    continue
+
+                logger.info("AccountCheck: starting alive check for all tokens...")
+                manager = await get_token_manager()
+
+                alive_count = 0
+                expired_count = 0
+                for pool in manager.pools.values():
+                    for token_info in pool.list():
+                        result = await manager.check_alive(token_info.token)
+                        if result is True:
+                            alive_count += 1
+                        elif result is False:
+                            expired_count += 1
+
+                logger.info(f"AccountCheck: completed - alive={alive_count}, expired={expired_count}")
+
+                if auto_clean and expired_count > 0:
+                    removed = 0
+                    for pool in manager.pools.values():
+                        to_remove = [t.token for t in pool.list() if t.alive is False or t.status.value == "expired"]
+                        for token_str in to_remove:
+                            await manager.remove(token_str)
+                            removed += 1
+                    if removed > 0:
+                        await manager._save(force=True)
+                        logger.info(f"AccountCheck: auto-cleaned {removed} expired tokens")
+
+                await asyncio.sleep(interval_seconds)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"AccountCheck: error - {e}")
+                await asyncio.sleep(300)
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._check_loop())
+        logger.info("AccountCheck: scheduler enabled")
+
+    def stop(self):
+        if not self._running:
+            return
+        self._running = False
+        if self._task:
+            self._task.cancel()
+
+
 # 全局单例
 _scheduler: Optional[TokenRefreshScheduler] = None
+_account_scheduler: Optional[AccountCheckScheduler] = None
 
 
 def get_scheduler(interval_hours: int = 8) -> TokenRefreshScheduler:
@@ -106,4 +177,12 @@ def get_scheduler(interval_hours: int = 8) -> TokenRefreshScheduler:
     return _scheduler
 
 
-__all__ = ["TokenRefreshScheduler", "get_scheduler"]
+def get_account_scheduler() -> AccountCheckScheduler:
+    """获取账号检测调度器单例"""
+    global _account_scheduler
+    if _account_scheduler is None:
+        _account_scheduler = AccountCheckScheduler()
+    return _account_scheduler
+
+
+__all__ = ["TokenRefreshScheduler", "get_scheduler", "AccountCheckScheduler", "get_account_scheduler"]

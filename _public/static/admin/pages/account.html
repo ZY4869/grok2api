@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>账号管理 - Grok2API</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/common/css/common.css?v=1.6.3">
+  <link rel="stylesheet" href="/static/admin/css/account.css?v=1.6.3">
+  <link rel="stylesheet" href="/static/common/css/toast.css">
+</head>
+<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="app-header"></div>
+  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in" style="padding-top: 5rem;">
+    <!-- 标题 -->
+    <div class="flex justify-between items-center">
+      <div>
+        <h2 class="text-2xl font-semibold">账号管理</h2>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">账号状态总览与批量管理</p>
+      </div>
+    </div>
+
+    <!-- 三张统计大卡片 -->
+    <div class="grid grid-cols-3 gap-4">
+      <div class="account-card">
+        <div class="account-card-value" id="stat-total">0</div>
+        <div class="account-card-label">全部账号</div>
+      </div>
+      <div class="account-card account-card-green">
+        <div class="account-card-value text-green-600" id="stat-alive">0</div>
+        <div class="account-card-label">可用账号</div>
+      </div>
+      <div class="account-card account-card-red">
+        <div class="account-card-value text-red-600" id="stat-expired">0</div>
+        <div class="account-card-label">失效账号</div>
+      </div>
+    </div>
+
+    <!-- 操作按钮栏 -->
+    <div class="flex items-center gap-3">
+      <button onclick="checkAllAlive()" class="geist-button gap-2" id="btn-check-all">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+        全部检测
+      </button>
+      <button onclick="cleanExpired()" class="geist-button-danger gap-2" id="btn-clean">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        清理失效
+      </button>
+      <div id="check-progress" class="hidden text-xs text-[var(--accents-4)] ml-2"></div>
+    </div>
+
+    <!-- 账号列表表格 -->
+    <div class="overflow-x-auto">
+      <table class="geist-table min-w-[800px]">
+        <thead>
+          <tr>
+            <th class="w-64 text-left">Token</th>
+            <th class="w-24 text-center">类型</th>
+            <th class="w-24 text-center">状态</th>
+            <th class="w-20 text-center">可用</th>
+            <th class="w-20 text-center">额度</th>
+            <th class="w-40 text-center">上次检测</th>
+            <th class="w-28 text-center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="account-table-body">
+        </tbody>
+      </table>
+    </div>
+    <div id="empty-state" class="hidden text-center py-12 text-[var(--accents-4)] text-sm">暂无账号数据</div>
+
+    <!-- 确认对话框 -->
+    <div id="confirm-overlay" class="modal-overlay hidden">
+      <div class="modal-content" style="max-width:400px;">
+        <h3 class="modal-title" id="confirm-title">确认操作</h3>
+        <p class="text-sm text-[var(--accents-4)]" id="confirm-message"></p>
+        <div class="modal-actions">
+          <button onclick="closeConfirm()" class="geist-button-outline">取消</button>
+          <button onclick="confirmAction()" class="geist-button-danger" id="confirm-btn">确认</button>
+        </div>
+      </div>
+    </div>
+  </main>
+  <div id="app-footer"></div>
+
+  <script src="/static/i18n/i18n.js"></script>
+  <script src="/static/common/js/admin-auth.js?v=1.6.3"></script>
+  <script src="/static/common/js/header.js?v=1.6.3"></script>
+  <script src="/static/common/js/footer.js?v=1.6.3"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/admin/js/account.js?v=1.6.3"></script>
+</body>
+</html>

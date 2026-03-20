@@ -37,3 +37,8 @@ async def admin_cache():
 @router.get("/admin/token", include_in_schema=False)
 async def admin_token():
     return _admin_page_response("admin/pages/token.html")
+
+
+@router.get("/admin/account", include_in_schema=False)
+async def admin_account():
+    return _admin_page_response("admin/pages/account.html")

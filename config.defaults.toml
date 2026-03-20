@@ -202,3 +202,11 @@ concurrent = 100
 batch_size = 50
 # Usage 请求超时时间（秒）
 timeout = 60
+
+[account]
+# 是否启用定时可用性检测
+auto_check_enabled = false
+# 检测间隔（小时）
+auto_check_interval_hours = 2
+# 检测后是否自动清理失效账号
+auto_clean_expired = false

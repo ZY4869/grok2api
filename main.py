@@ -39,6 +39,7 @@ from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.api.v1.response import router as responses_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
+from app.services.token.scheduler import get_account_scheduler  # noqa: E402
 from app.api.v1.admin import router as admin_router
 from app.api.v1.function import router as function_router
 from app.api.pages import router as pages_router
@@ -93,11 +94,17 @@ async def lifespan(app: FastAPI):
     from app.services.cf_refresh import start as cf_refresh_start
     cf_refresh_start()
 
+    # 6. 启动账号可用性定时检测
+    account_scheduler = get_account_scheduler()
+    account_scheduler.start()
+
     logger.info("Application startup complete.")
     yield
 
     # 关闭
     logger.info("Shutting down Grok2API...")
+
+    account_scheduler.stop()
 
     from app.services.cf_refresh import stop as cf_refresh_stop
     cf_refresh_stop()

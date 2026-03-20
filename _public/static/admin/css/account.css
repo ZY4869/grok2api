@@ -1,0 +1,26 @@
+.account-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  transition: border-color 0.2s;
+}
+.account-card:hover {
+  border-color: var(--accents-7);
+}
+.account-card-green {
+  border-left: 3px solid #16a34a;
+}
+.account-card-red {
+  border-left: 3px solid #dc2626;
+}
+.account-card-value {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.account-card-label {
+  font-size: 13px;
+  color: var(--accents-4);
+}
