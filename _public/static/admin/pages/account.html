@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>账号管理 - Grok2API</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/common/css/common.css?v=1.6.3">
-  <link rel="stylesheet" href="/static/admin/css/token.css?v=1.6.3">
-  <link rel="stylesheet" href="/static/admin/css/account.css?v=1.6.3">
+  <link rel="stylesheet" href="/static/common/css/common.css?v=1.7.0">
+  <link rel="stylesheet" href="/static/admin/css/token.css?v=1.7.0">
+  <link rel="stylesheet" href="/static/admin/css/account.css?v=1.7.0">
   <link rel="stylesheet" href="/static/common/css/toast.css">
 </head>
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
@@ -17,9 +17,17 @@
     <div class="flex justify-between items-center">
       <div>
         <h2 class="text-2xl font-semibold">账号管理</h2>
-        <p class="text-[var(--accents-4)] mt-1 text-sm">账号状态总览与批量管理</p>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">账号存储与批量管理</p>
       </div>
       <div class="flex items-center gap-3">
+        <button onclick="exportTokens()" class="geist-button-outline gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span>导出</span>
+        </button>
         <button onclick="openImportModal()" class="geist-button-outline gap-2">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -38,11 +46,13 @@
     </div>
 
     <!-- 操作按钮栏 -->
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-3 flex-wrap">
       <button onclick="checkAllAlive()" class="geist-button gap-2" id="btn-check-all">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
         全部检测
       </button>
+      <button onclick="batchEnable()" class="geist-button-outline gap-2 text-xs px-3">启用选中</button>
+      <button onclick="batchDisable()" class="geist-button-outline gap-2 text-xs px-3">禁用选中</button>
       <button onclick="cleanExpired()" class="geist-button-danger gap-2" id="btn-clean">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         清理失效
@@ -52,16 +62,17 @@
 
     <!-- 账号列表表格 -->
     <div class="overflow-x-auto">
-      <table class="geist-table min-w-[800px]">
+      <table class="geist-table min-w-[900px]">
         <thead>
           <tr>
-            <th class="w-64 text-left">Token</th>
+            <th class="w-10"><input type="checkbox" id="select-all" class="checkbox" onclick="toggleSelectAll()"></th>
+            <th class="w-56 text-left">Token</th>
             <th class="w-24 text-center">类型</th>
-            <th class="w-24 text-center">状态</th>
             <th class="w-20 text-center">可用</th>
-            <th class="w-20 text-center">额度</th>
-            <th class="w-40 text-center">上次检测</th>
-            <th class="w-28 text-center">操作</th>
+            <th class="w-16 text-center">NSFW</th>
+            <th class="w-16 text-center">额度</th>
+            <th class="w-36 text-center">上次检测</th>
+            <th class="w-32 text-center">操作</th>
           </tr>
         </thead>
         <tbody id="account-table-body">
@@ -74,7 +85,7 @@
     <div id="import-modal" class="modal-overlay hidden">
       <div class="modal-content modal-lg">
         <div class="modal-header">
-          <h3 class="modal-title">批量导入 Token</h3>
+          <h3 class="modal-title">导入 Token</h3>
           <button onclick="closeImportModal()" class="modal-close">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
@@ -88,8 +99,16 @@
             </select>
           </div>
           <div>
-            <label class="modal-label mb-1 block">Token 列表 (每行一个)</label>
-            <textarea id="import-text" class="geist-input font-mono h-48" placeholder="粘贴 Token，一行一个..."></textarea>
+            <label class="modal-label mb-1 block">上传 CSV 文件（可选）</label>
+            <div class="flex items-center gap-2">
+              <input type="file" id="import-csv" accept=".csv" class="geist-input text-xs" onchange="handleCsvUpload(event)">
+              <button onclick="downloadTemplate()" class="geist-button-outline text-xs px-3 whitespace-nowrap">下载模板</button>
+            </div>
+            <p class="text-xs text-[var(--accents-4)] mt-1">CSV 格式：token,pool（pool 列可选，为空则使用上方选择的 Pool）</p>
+          </div>
+          <div>
+            <label class="modal-label mb-1 block">或粘贴 Token（每行一个）</label>
+            <textarea id="import-text" class="geist-input font-mono h-36" placeholder="粘贴 Token，一行一个..."></textarea>
           </div>
           <div class="flex justify-end gap-2 pt-2">
             <button onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
@@ -114,10 +133,10 @@
   <div id="app-footer"></div>
 
   <script src="/static/i18n/i18n.js"></script>
-  <script src="/static/common/js/admin-auth.js?v=1.6.3"></script>
-  <script src="/static/common/js/header.js?v=1.6.3"></script>
-  <script src="/static/common/js/footer.js?v=1.6.3"></script>
+  <script src="/static/common/js/admin-auth.js?v=1.7.0"></script>
+  <script src="/static/common/js/header.js?v=1.7.0"></script>
+  <script src="/static/common/js/footer.js?v=1.7.0"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/admin/js/account.js?v=1.6.3"></script>
+  <script src="/static/admin/js/account.js?v=1.7.0"></script>
 </body>
 </html>
