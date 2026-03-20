@@ -2,7 +2,7 @@
   const modelChip = document.getElementById('modelChip');
   const modelLabel = document.getElementById('modelLabel');
   const modelDropdown = document.getElementById('modelDropdown');
-  let modelValue = 'grok-4.20-beta';
+  let modelValue = 'grok-auto';
   let modelList = [];
   const tempRange = document.getElementById('tempRange');
   const tempValue = document.getElementById('tempValue');
@@ -1347,8 +1347,8 @@
 
   async function loadModels() {
     if (!modelDropdown) return;
-    const fallback = ['grok-4.1-fast', 'grok-4', 'grok-3', 'grok-3-mini', 'grok-3-thinking', 'grok-4.20-beta', 'grok-imagine-1.0-fast'];
-    const preferred = 'grok-4.20-beta';
+    const fallback = ['grok-auto', 'grok-3-fast', 'grok-4-expert', 'grok-4-heavy', 'grok-imagine-1.0-fast'];
+    const preferred = 'grok-auto';
     try {
       const res = await fetch('/v1/models', { cache: 'no-store' });
       if (!res.ok) throw new Error('models fetch failed');

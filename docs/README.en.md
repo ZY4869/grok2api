@@ -107,23 +107,25 @@ docker compose up -d
 
 ## Models
 
-| Model | Cost | Account | Chat | Image | Video |
-| :-- | :--: | :-- | :--: | :--: | :--: |
-| `grok-3` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-3-mini` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-3-thinking` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4-thinking` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4-heavy` | 4 | Super | Yes | Yes | - |
-| `grok-4.1-mini` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4.1-fast` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-4.1-expert` | 4 | Basic/Super | Yes | Yes | - |
-| `grok-4.1-thinking` | 4 | Basic/Super | Yes | Yes | - |
-| `grok-4.20-beta` | 1 | Basic/Super | Yes | Yes | - |
-| `grok-imagine-1.0` | - | Basic/Super | - | Yes | - |
-| `grok-imagine-1.0-fast` | - | Basic/Super | - | Yes | - |
-| `grok-imagine-1.0-edit` | - | Basic/Super | - | Yes | - |
-| `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
+> All chat models use modeId request format, matching the Grok website behavior.
+
+**Chat Models (Quick Modes)**
+
+| Model | Underlying | Description | Account | Chat | Image |
+| :-- | :-- | :-- | :-- | :--: | :--: |
+| `grok-auto` | grok-3/grok-4 | Auto chooses Fast or Expert | Basic/Super | Yes | Yes |
+| `grok-3-fast` | grok-3 | Quick responses | Basic/Super | Yes | Yes |
+| `grok-4-expert` | grok-4 | Thinks hard | Basic/Super | Yes | Yes |
+| `grok-4-heavy` | grok-4 | SuperGrok Heavy | Super | Yes | Yes |
+
+**Image / Video Models**
+
+| Model | Description | Account | Image | Video |
+| :-- | :-- | :-- | :--: | :--: |
+| `grok-imagine-1.0` | Image generation | Basic/Super | Yes | - |
+| `grok-imagine-1.0-fast` | Fast image generation | Basic/Super | Yes | - |
+| `grok-imagine-1.0-edit` | Image editing | Basic/Super | Yes | - |
+| `grok-imagine-1.0-video` | Video generation | Basic/Super | - | Yes |
 
 <br>
 
@@ -140,7 +142,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4",
+    "model": "grok-auto",
     "messages": [{"role":"user","content":"Hello"}]
   }'
 ```
@@ -214,7 +216,7 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4",
+    "model": "grok-auto",
     "input": "Explain quantum tunneling",
     "stream": true
   }'

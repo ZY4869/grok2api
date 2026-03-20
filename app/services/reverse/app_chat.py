@@ -97,14 +97,12 @@ class AppChatReverse:
             payload["enable420"] = False
             payload["responseMetadata"] = {}
         else:
-            # 旧接口：使用 modelName + modelMode 方式
+            # 旧接口：使用 modelName + modelMode 方式（图片/视频模型）
             payload["modelName"] = model
             payload["modelMode"] = mode
             payload["responseMetadata"] = {
                 "requestModelDetails": {"modelId": model},
             }
-            if model == "grok-420":
-                payload["enable420"] = True
 
         custom_personality = AppChatReverse._resolve_custom_personality()
         if custom_personality is not None:
