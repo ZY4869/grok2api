@@ -19,6 +19,10 @@ const qsa = (selector) => document.querySelectorAll(selector);
 const DEFAULT_QUOTA_BASIC = 80;
 const DEFAULT_QUOTA_SUPER = 140;
 
+function hasTokenTableView() {
+  return Boolean(byId('token-table-body'));
+}
+
 function getDefaultQuotaForPool(pool) {
   return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
 }
@@ -112,8 +116,10 @@ async function init() {
   if (apiKey === null) return;
   setupEditPoolDefaults();
   setupConfirmDialog();
-  setupSelectAllMenu();
-  refreshPageSizeOptionsI18n();
+  if (hasTokenTableView()) {
+    setupSelectAllMenu();
+    refreshPageSizeOptionsI18n();
+  }
   loadData();
 }
 
@@ -261,6 +267,10 @@ function renderTable() {
   const indexByRef = new Map(flatTokens.map((t, i) => [t, i]));
 
   updatePaginationControls(totalCount, totalPages);
+  if (!tbody) {
+    updateSelectionState();
+    return;
+  }
 
   if (visibleTokens.length === 0) {
     tbody.replaceChildren();
@@ -268,12 +278,12 @@ function renderTable() {
       emptyState.textContent = currentFilter === 'all'
         ? t('token.emptyState')
         : t('token.emptyFilterState');
+      emptyState.classList.remove('hidden');
     }
-    emptyState.classList.remove('hidden');
     updateSelectionState();
     return;
   }
-  emptyState.classList.add('hidden');
+  if (emptyState) emptyState.classList.add('hidden');
 
   const fragment = document.createDocumentFragment();
   visibleTokens.forEach((item) => {
