@@ -8,6 +8,7 @@ from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
+from app.core.call_log import log_call_failure
 from app.core.logger import logger
 
 
@@ -121,6 +122,7 @@ class StreamIdleTimeoutError(Exception):
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """处理应用异常"""
     logger.warning(f"AppException: {exc.error_type} - {exc.message}")
+    await log_call_failure(exc)
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -154,6 +156,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     code = code_map.get(exc.status_code, None)
 
     logger.warning(f"HTTPException: {exc.status_code} - {exc.detail}")
+    await log_call_failure(exc)
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -189,6 +192,7 @@ async def validation_exception_handler(
         param, message, code = None, "Invalid request", "invalid_value"
 
     logger.warning(f"ValidationError: {param} - {message}")
+    await log_call_failure(ValidationException(message=message, param=param, code=code))
 
     return JSONResponse(
         status_code=400,
@@ -204,6 +208,7 @@ async def validation_exception_handler(
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """处理未捕获异常"""
     logger.exception(f"Unhandled: {type(exc).__name__}: {str(exc)}")
+    await log_call_failure(exc)
 
     return JSONResponse(
         status_code=500,

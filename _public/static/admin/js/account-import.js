@@ -238,6 +238,10 @@
           ? { ...targetList[targetIndex], ...merged, token }
           : { ...merged, token };
 
+      if (entry.email !== undefined) {
+        nextItem.email = String(entry.email || "").trim();
+      }
+
       if (targetIndex >= 0) {
         targetList[targetIndex] = nextItem;
       } else {

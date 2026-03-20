@@ -4,10 +4,11 @@ Responses API 路由 (OpenAI compatible).
 
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.core.call_log import begin_call_log, wrap_call_log_stream
 from app.core.exceptions import ValidationException
 from app.services.grok.services.responses import ResponsesService
 
@@ -38,39 +39,45 @@ class ResponseCreateRequest(BaseModel):
 
 
 @router.post("/responses")
-async def create_response(request: ResponseCreateRequest):
-    if not request.model:
+async def create_response(body: ResponseCreateRequest, request: Request):
+    begin_call_log(
+        "responses.create",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=body.model,
+    )
+
+    if not body.model:
         raise ValidationException(message="model is required", param="model", code="invalid_request_error")
 
-    if request.input is None:
+    if body.input is None:
         raise ValidationException(message="input is required", param="input", code="invalid_request_error")
 
     reasoning_effort = None
-    if isinstance(request.reasoning, dict):
-        reasoning_effort = request.reasoning.get("effort") or request.reasoning.get("reasoning_effort")
+    if isinstance(body.reasoning, dict):
+        reasoning_effort = body.reasoning.get("effort") or body.reasoning.get("reasoning_effort")
 
     result = await ResponsesService.create(
-        model=request.model,
-        input_value=request.input,
-        instructions=request.instructions,
-        stream=bool(request.stream),
-        temperature=request.temperature,
-        top_p=request.top_p,
-        tools=request.tools,
-        tool_choice=request.tool_choice,
-        parallel_tool_calls=request.parallel_tool_calls,
+        model=body.model,
+        input_value=body.input,
+        instructions=body.instructions,
+        stream=bool(body.stream),
+        temperature=body.temperature,
+        top_p=body.top_p,
+        tools=body.tools,
+        tool_choice=body.tool_choice,
+        parallel_tool_calls=body.parallel_tool_calls,
         reasoning_effort=reasoning_effort,
-        max_output_tokens=request.max_output_tokens,
-        metadata=request.metadata,
-        user=request.user,
-        store=request.store,
-        previous_response_id=request.previous_response_id,
-        truncation=request.truncation,
+        max_output_tokens=body.max_output_tokens,
+        metadata=body.metadata,
+        user=body.user,
+        store=body.store,
+        previous_response_id=body.previous_response_id,
+        truncation=body.truncation,
     )
 
-    if request.stream:
+    if body.stream:
         return StreamingResponse(
-            result,
+            wrap_call_log_stream(result),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

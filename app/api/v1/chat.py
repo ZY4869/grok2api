@@ -8,7 +8,7 @@ import binascii
 import time
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 import orjson
@@ -22,6 +22,10 @@ from app.services.grok.utils.response import make_chat_response
 from app.services.token import get_token_manager
 from app.core.config import get_config
 from app.core.exceptions import ValidationException, AppException, ErrorType
+from app.core.call_log import (
+    begin_call_log,
+    log_call_failure,
+)
 
 
 class MessageItem(BaseModel):
@@ -185,6 +189,7 @@ async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, No
         async for chunk in stream:
             yield chunk
     except AppException as e:
+        await log_call_failure(e)
         payload = {
             "error": {
                 "message": e.message,
@@ -195,6 +200,7 @@ async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, No
         yield f"event: error\ndata: {orjson.dumps(payload).decode()}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
+        await log_call_failure(e)
         payload = {
             "error": {
                 "message": str(e) or "stream_error",
@@ -681,19 +687,24 @@ router = APIRouter(tags=["Chat"])
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: Request, body: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
     from app.core.logger import logger
 
     # 参数验证
-    validate_request(request)
+    begin_call_log(
+        "chat.completions",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=body.model,
+    )
+    validate_request(body)
 
-    logger.debug(f"Chat request: model={request.model}, stream={request.stream}")
+    logger.debug(f"Chat request: model={body.model}, stream={body.stream}")
 
     # 检测模型类型
-    model_info = ModelService.get(request.model)
+    model_info = ModelService.get(body.model)
     if model_info and model_info.is_image_edit:
-        prompt, image_urls = _extract_prompt_images(request.messages)
+        prompt, image_urls = _extract_prompt_images(body.messages)
         if not image_urls:
             raise ValidationException(
                 message="Image is required",
@@ -702,9 +713,9 @@ async def chat_completions(request: ChatCompletionRequest):
             )
 
         is_stream = (
-            request.stream if request.stream is not None else get_config("app.stream")
+            body.stream if body.stream is not None else get_config("app.stream")
         )
-        image_conf = request.image_config or ImageConfig()
+        image_conf = body.image_config or ImageConfig()
         _validate_image_config(image_conf, stream=bool(is_stream))
         response_format = _resolve_image_format(image_conf.response_format)
         response_field = _image_field(response_format)
@@ -714,7 +725,7 @@ async def chat_completions(request: ChatCompletionRequest):
         await token_mgr.reload_if_stale()
 
         token = None
-        for pool_name in ModelService.pool_candidates_for_model(request.model):
+        for pool_name in ModelService.pool_candidates_for_model(body.model):
             token = token_mgr.get_token(pool_name)
             if token:
                 break
@@ -748,16 +759,16 @@ async def chat_completions(request: ChatCompletionRequest):
 
         content = result.data[0] if result.data else ""
         return JSONResponse(
-            content=make_chat_response(request.model, content)
+            content=make_chat_response(body.model, content)
         )
 
     if model_info and model_info.is_image:
-        prompt, _ = _extract_prompt_images(request.messages)
+        prompt, _ = _extract_prompt_images(body.messages)
 
         is_stream = (
-            request.stream if request.stream is not None else get_config("app.stream")
+            body.stream if body.stream is not None else get_config("app.stream")
         )
-        image_conf = _imagine_fast_server_image_config() if request.model == IMAGINE_FAST_MODEL_ID else (request.image_config or ImageConfig())
+        image_conf = _imagine_fast_server_image_config() if body.model == IMAGINE_FAST_MODEL_ID else (body.image_config or ImageConfig())
         _validate_image_config(image_conf, stream=bool(is_stream))
         response_format = _resolve_image_format(image_conf.response_format)
         response_field = _image_field(response_format)
@@ -776,7 +787,7 @@ async def chat_completions(request: ChatCompletionRequest):
         await token_mgr.reload_if_stale()
 
         token = None
-        for pool_name in ModelService.pool_candidates_for_model(request.model):
+        for pool_name in ModelService.pool_candidates_for_model(body.model):
             token = token_mgr.get_token(pool_name)
             if token:
                 break
@@ -812,43 +823,45 @@ async def chat_completions(request: ChatCompletionRequest):
         content = result.data[0] if result.data else ""
         usage = result.usage_override
         return JSONResponse(
-            content=make_chat_response(request.model, content, usage=usage)
+            content=make_chat_response(body.model, content, usage=usage)
         )
 
     if model_info and model_info.is_video:
         # 提取视频配置 (默认值在 Pydantic 模型中处理)
-        v_conf = request.video_config or VideoConfig()
+        v_conf = body.video_config or VideoConfig()
 
         try:
             result = await VideoService.completions(
-                model=request.model,
-                messages=[msg.model_dump() for msg in request.messages],
-                stream=request.stream,
-                reasoning_effort=request.reasoning_effort,
+                model=body.model,
+                messages=[msg.model_dump() for msg in body.messages],
+                stream=body.stream,
+                reasoning_effort=body.reasoning_effort,
                 aspect_ratio=v_conf.aspect_ratio,
                 video_length=v_conf.video_length,
                 resolution=v_conf.resolution_name,
                 preset=v_conf.preset,
             )
         except Exception as e:
-            if request.stream is not False:
+            await log_call_failure(e)
+            if body.stream is not False:
                 return _streaming_error_response(e)
             raise
     else:
         try:
             result = await ChatService.completions(
-                model=request.model,
-                messages=[msg.model_dump() for msg in request.messages],
-                stream=request.stream,
-                reasoning_effort=request.reasoning_effort,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                tools=request.tools,
-                tool_choice=request.tool_choice,
-                parallel_tool_calls=request.parallel_tool_calls,
+                model=body.model,
+                messages=[msg.model_dump() for msg in body.messages],
+                stream=body.stream,
+                reasoning_effort=body.reasoning_effort,
+                temperature=body.temperature,
+                top_p=body.top_p,
+                tools=body.tools,
+                tool_choice=body.tool_choice,
+                parallel_tool_calls=body.parallel_tool_calls,
             )
         except Exception as e:
-            if request.stream is not False:
+            await log_call_failure(e)
+            if body.stream is not False:
                 return _streaming_error_response(e)
             raise
 

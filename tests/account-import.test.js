@@ -125,4 +125,16 @@ test("prepareImportPayload keeps existing fields and only schedules missing nsfw
   assert.equal(prepared.payload.ssoBasic.length, 1);
   assert.equal(prepared.payload.ssoSuper.length, 1);
   assert.equal(prepared.payload.ssoSuper[0].note, "keep-me");
+  assert.equal(prepared.payload.ssoSuper[0].email, "");
+});
+
+test("prepareImportPayload persists csv email onto token payload", () => {
+  const prepared = accountImport.prepareImportPayload(
+    {
+      ssoBasic: [{ token: "token-1", status: "active" }],
+    },
+    [{ token: "token-1", pool: "ssoBasic", nsfwRequested: false, email: "user@example.com" }]
+  );
+
+  assert.equal(prepared.payload.ssoBasic[0].email, "user@example.com");
 });

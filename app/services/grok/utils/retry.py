@@ -16,6 +16,11 @@ async def pick_token(
     prefer_tags: Optional[Set[str]] = None,
 ) -> Optional[str]:
     if preferred and preferred not in tried:
+        if hasattr(token_mgr, "bind_token_context"):
+            try:
+                token_mgr.bind_token_context(preferred)
+            except Exception:
+                pass
         return preferred
 
     token = None

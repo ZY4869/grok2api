@@ -77,6 +77,7 @@ class TokenInfo(BaseModel):
     # 扩展
     tags: List[str] = Field(default_factory=list)
     note: str = ""
+    email: Optional[str] = None
     last_asset_clear_at: Optional[int] = None
 
     @field_validator("token", mode="before")
@@ -112,6 +113,16 @@ class TokenInfo(BaseModel):
         if not token:
             raise ValueError("token cannot be empty")
         return token
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, value):
+        if value is None:
+            return None
+        email = str(value).strip()
+        if not email:
+            return None
+        return email.lower()
 
     def is_available(self, consumed_mode: bool = False) -> bool:
         """检查当前模式下 token 是否可用。"""

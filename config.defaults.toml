@@ -210,3 +210,7 @@ auto_check_enabled = false
 auto_check_interval_hours = 2
 # 检测后是否自动清理失效账号
 auto_clean_expired = false
+
+[call_log]
+# 调用日志保留天数，0 表示永久保存
+retention_days = 0

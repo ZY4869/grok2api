@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set
 
 from app.core.logger import logger
+from app.core.call_log import bind_call_log_account, log_call_success
 from app.services.token.models import (
     TokenInfo,
     EffortType,
@@ -233,6 +234,20 @@ class TokenManager:
         )
         return to_pool
 
+    def _bind_token_context(self, token: TokenInfo, pool_name: str):
+        if not token:
+            return
+        bind_call_log_account(token.token, pool_name, token.email or "")
+
+    def bind_token_context(self, token_str: str) -> bool:
+        raw_token = str(token_str or "").replace("sso=", "")
+        for pool_name, pool in self.pools.items():
+            token = pool.get(raw_token)
+            if token:
+                self._bind_token_context(token, pool_name)
+                return True
+        return False
+
     async def _save(self, force: bool = False):
         """保存变更"""
         async with self._save_lock:
@@ -358,6 +373,7 @@ class TokenManager:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
 
+        self._bind_token_context(token_info, pool_name)
         token = token_info.token
         if token.startswith("sso="):
             return token[4:]
@@ -383,6 +399,7 @@ class TokenManager:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
 
+        self._bind_token_context(token_info, pool_name)
         return token_info
 
     def get_token_for_video(
@@ -477,6 +494,7 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
+                self._bind_token_context(token, pool.name)
                 old_status = token.status
                 if self._is_consumed_mode():
                     consumed = token.consume_with_consumed(effort)
@@ -488,6 +506,7 @@ class TokenManager:
                 change_kind = "state" if token.status != old_status else "usage"
                 self._track_token_change(token, pool.name, change_kind)
                 self._schedule_save()
+                await log_call_success()
                 return True
 
         logger.warning(f"Token {raw_token[:10]}...: not found for consumption")

@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.auth import verify_function_key
+from app.core.call_log import begin_call_log, log_call_failure
 from app.core.logger import logger
 from app.services.grok.services.video import VideoService
 from app.services.grok.services.model import ModelService
@@ -207,6 +208,11 @@ async def function_video_sse(request: Request, task_id: str = Query("")):
 
     async def event_stream():
         try:
+            begin_call_log(
+                "function.video",
+                trace_id=getattr(request.state, "trace_id", ""),
+                model="grok-imagine-1.0-video",
+            )
             model_id = "grok-imagine-1.0-video"
             model_info = ModelService.get(model_id)
             if not model_info or not model_info.is_video:
@@ -248,6 +254,7 @@ async def function_video_sse(request: Request, task_id: str = Query("")):
                 yield chunk
         except Exception as e:
             logger.warning(f"Function video SSE error: {e}")
+            await log_call_failure(e)
             payload = {"error": str(e), "code": "internal_error"}
             yield f"data: {orjson.dumps(payload).decode()}\n\n"
             yield "data: [DONE]\n\n"

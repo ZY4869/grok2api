@@ -13,6 +13,7 @@ from app.core.auth import (
     get_function_api_key,
     is_function_enabled,
 )
+from app.core.call_log import begin_call_log, log_call_failure
 from app.core.config import get_config
 from app.core.logger import logger
 from app.api.v1.image import resolve_aspect_ratio
@@ -188,6 +189,7 @@ async def function_imagine_ws(websocket: WebSocket):
 
         while not stop_event.is_set():
             try:
+                begin_call_log("function.imagine", model=model_id)
                 await token_mgr.reload_if_stale()
                 token = None
                 for pool_name in ModelService.pool_candidates_for_model(
@@ -198,6 +200,10 @@ async def function_imagine_ws(websocket: WebSocket):
                         break
 
                 if not token:
+                    await log_call_failure(
+                        error_code="rate_limit_exceeded",
+                        error_message="No available tokens. Please try again later.",
+                    )
                     await _send(
                         {
                             "type": "error",
@@ -242,6 +248,10 @@ async def function_imagine_ws(websocket: WebSocket):
                                 }
                             )
                     else:
+                        await log_call_failure(
+                            error_code="empty_image",
+                            error_message="Image generation returned empty data.",
+                        )
                         await _send(
                             {
                                 "type": "error",
@@ -254,6 +264,7 @@ async def function_imagine_ws(websocket: WebSocket):
                 break
             except Exception as e:
                 logger.warning(f"Imagine stream error: {e}")
+                await log_call_failure(e)
                 await _send(
                     {
                         "type": "error",
@@ -397,6 +408,11 @@ async def function_imagine_sse(
                         break
 
                 try:
+                    begin_call_log(
+                        "function.imagine",
+                        trace_id=getattr(request.state, "trace_id", ""),
+                        model=model_id,
+                    )
                     await token_mgr.reload_if_stale()
                     token = None
                     for pool_name in ModelService.pool_candidates_for_model(
@@ -407,6 +423,10 @@ async def function_imagine_sse(
                             break
 
                     if not token:
+                        await log_call_failure(
+                            error_code="rate_limit_exceeded",
+                            error_message="No available tokens. Please try again later.",
+                        )
                         yield (
                             f"data: {orjson.dumps({'type': 'error', 'message': 'No available tokens. Please try again later.', 'code': 'rate_limit_exceeded'}).decode()}\n\n"
                         )
@@ -448,6 +468,10 @@ async def function_imagine_sse(
                                 }
                                 yield f"data: {orjson.dumps(payload).decode()}\n\n"
                         else:
+                            await log_call_failure(
+                                error_code="empty_image",
+                                error_message="Image generation returned empty data.",
+                            )
                             yield (
                                 f"data: {orjson.dumps({'type': 'error', 'message': 'Image generation returned empty data.', 'code': 'empty_image'}).decode()}\n\n"
                             )
@@ -455,6 +479,7 @@ async def function_imagine_sse(
                     break
                 except Exception as e:
                     logger.warning(f"Imagine SSE error: {e}")
+                    await log_call_failure(e)
                     yield (
                         f"data: {orjson.dumps({'type': 'error', 'message': str(e), 'code': 'internal_error'}).decode()}\n\n"
                     )
