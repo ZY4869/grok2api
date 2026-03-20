@@ -131,16 +131,22 @@ function renderTable() {
       : '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>';
     const toggleClass = isDisabled ? 'hover:text-green-600' : 'hover:text-orange-600';
     const toggleTitle = isDisabled ? '启用' : '禁用';
+    const hasNsfwTag = item.tags && item.tags.includes('nsfw');
+    const nsfwBtnClass = hasNsfwTag ? 'text-purple-500 hover:text-gray-400' : 'text-gray-400 hover:text-purple-500';
+    const nsfwTitle = hasNsfwTag ? '关闭 NSFW' : '开启 NSFW';
     tdActions.innerHTML = `
-      <div class="flex items-center justify-center gap-2">
+      <div class="flex items-center justify-center gap-1">
         <button onclick="checkSingleAlive('${item.token}')" class="p-1 text-gray-400 hover:text-green-600 rounded" title="检测">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+        </button>
+        <button onclick="toggleSingleNSFW(${idx})" class="p-1 ${nsfwBtnClass} rounded" title="${nsfwTitle}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         </button>
         <button onclick="toggleSingleStatus(${idx})" class="p-1 text-gray-400 ${toggleClass} rounded" title="${toggleTitle}">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${toggleIcon}</svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${toggleIcon}</svg>
         </button>
         <button onclick="deleteSingle('${item.token}', '${item.pool}')" class="p-1 text-gray-400 hover:text-red-600 rounded" title="删除">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
       </div>
     `;
@@ -240,6 +246,77 @@ async function toggleSingleStatus(idx) {
     showToast(newStatus === 'active' ? '已启用' : '已禁用', 'success');
   } else {
     showToast('操作失败', 'error');
+  }
+}
+
+// ========== NSFW 功能 ==========
+
+async function enableNSFWForTokens(tokens) {
+  try {
+    const res = await fetch('/v1/admin/tokens/nsfw/enable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(apiKey) },
+      body: JSON.stringify({ tokens: tokens })
+    });
+    const data = await res.json();
+    return res.ok && data.status === 'success';
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+async function toggleSingleNSFW(idx) {
+  const item = allTokens[idx];
+  const hasNsfw = item.tags && item.tags.includes('nsfw');
+
+  if (hasNsfw) {
+    // 关闭 NSFW：从 tags 中移除
+    try {
+      const res = await fetch('/v1/admin/tokens', { headers: buildAuthHeaders(apiKey) });
+      const data = await res.json();
+      const existing = data.tokens || {};
+      for (const [pool, list] of Object.entries(existing)) {
+        existing[pool] = list.map(t => {
+          if (t.token === item.token) {
+            const tags = (t.tags || []).filter(tag => tag !== 'nsfw');
+            return { ...t, tags };
+          }
+          return t;
+        });
+      }
+      const saveRes = await fetch('/v1/admin/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...buildAuthHeaders(apiKey) },
+        body: JSON.stringify(existing)
+      });
+      if (saveRes.ok) {
+        await loadAccountData();
+        showToast('NSFW 已关闭', 'success');
+      } else { showToast('操作失败', 'error'); }
+    } catch (e) { console.error(e); showToast('请求失败', 'error'); }
+  } else {
+    // 开启 NSFW：调用 API
+    const ok = await enableNSFWForTokens([item.token]);
+    if (ok) {
+      await loadAccountData();
+      showToast('NSFW 已开启', 'success');
+    } else {
+      showToast('开启 NSFW 失败（需要代理或 cf_clearance）', 'error');
+    }
+  }
+}
+
+async function batchEnableNSFW() {
+  const selected = getSelected();
+  if (!selected.length) { showToast('请先选择账号', 'info'); return; }
+  const tokens = selected.map(t => t.token);
+  const ok = await enableNSFWForTokens(tokens);
+  if (ok) {
+    await loadAccountData();
+    showToast(`已为 ${tokens.length} 个账号开启 NSFW`, 'success');
+  } else {
+    showToast('开启 NSFW 失败（需要代理或 cf_clearance）', 'error');
   }
 }
 
