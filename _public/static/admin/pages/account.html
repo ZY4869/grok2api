@@ -12,11 +12,11 @@
 </head>
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="app-header"></div>
-  <main class="space-y-6 flex-1 container mx-auto max-w-5xl px-6 py-8 fade-in" style="padding-top: 5rem;">
+  <main class="space-y-6 flex-1 w-full max-w-6xl mx-auto px-6 py-8 fade-in" style="padding-top: 5rem;">
     <div class="flex justify-between items-center flex-wrap gap-3">
       <div>
         <h2 class="text-2xl font-semibold">账号管理</h2>
-        <p class="text-[var(--accents-4)] mt-1 text-sm">账号存储、CSV 导入和批量管理</p>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">账号存储、CSV 导入导出、Email 维护与批量管理</p>
       </div>
       <div class="flex items-center gap-3 flex-wrap">
         <a href="/admin/config#config-section-account" class="geist-button-outline gap-2">
@@ -68,20 +68,21 @@
       <div id="check-progress" class="hidden text-xs text-[var(--accents-4)] ml-2"></div>
     </div>
 
-    <div class="overflow-x-auto">
-      <table class="geist-table min-w-[900px]">
+    <div class="overflow-x-auto account-table-wrap">
+      <table class="geist-table min-w-[1080px] w-full">
         <thead>
           <tr>
             <th class="w-10">
               <input type="checkbox" id="select-all" class="checkbox" onclick="toggleSelectAll()">
             </th>
             <th class="w-56 text-left">Token</th>
+            <th class="w-48 text-left">Email</th>
             <th class="w-24 text-center">类型</th>
             <th class="w-20 text-center">可用</th>
             <th class="w-16 text-center">NSFW</th>
             <th class="w-16 text-center">额度</th>
             <th class="w-36 text-center">上次检测</th>
-            <th class="w-32 text-center">操作</th>
+            <th class="w-36 text-center">操作</th>
           </tr>
         </thead>
         <tbody id="account-table-body"></tbody>
@@ -115,7 +116,7 @@
               <button onclick="downloadTemplate()" class="geist-button-outline text-xs px-3 whitespace-nowrap">下载模板</button>
             </div>
             <p class="text-xs text-[var(--accents-4)] mt-1">
-              CSV 格式：token,pool,nsfw,email，其中 pool/nsfw/email 可选，页面任意位置也支持拖拽 CSV。
+              CSV 格式：`token,pool,nsfw,email`，其中 `pool/nsfw/email` 可选，页面任意位置也支持拖拽 CSV。
             </p>
             <div id="import-csv-state" class="import-feedback hidden"></div>
           </div>
@@ -127,6 +128,41 @@
           <div class="flex justify-end gap-2 pt-2">
             <button id="import-cancel-btn" onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
             <button id="import-submit-btn" onclick="submitImport()" class="geist-button text-xs px-3">开始导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="edit-modal" class="modal-overlay hidden">
+      <div class="modal-content" style="max-width: 460px;">
+        <div class="modal-header">
+          <h3 class="modal-title">编辑账号</h3>
+          <button onclick="closeEditModal()" class="modal-close">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="space-y-4">
+          <div>
+            <label class="modal-label mb-1 block">Token</label>
+            <div id="edit-token-display" class="geist-input font-mono text-xs bg-[var(--accents-1)]"></div>
+          </div>
+          <div>
+            <label class="modal-label mb-1 block">Email</label>
+            <input id="edit-email" class="geist-input" type="email" placeholder="user@example.com">
+          </div>
+          <div>
+            <label class="modal-label mb-1 block">Pool</label>
+            <select id="edit-pool" class="geist-input">
+              <option value="ssoBasic">ssoBasic</option>
+              <option value="ssoSuper">ssoSuper</option>
+            </select>
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <button onclick="closeEditModal()" class="geist-button-outline text-xs px-3">取消</button>
+            <button onclick="saveEditToken()" class="geist-button text-xs px-3">保存</button>
           </div>
         </div>
       </div>
@@ -154,7 +190,7 @@
 
   <script src="/static/i18n/i18n.js"></script>
   <script src="/static/common/js/admin-auth.js?v=1.7.0"></script>
-  <script src="/static/common/js/header.js?v=1.7.0"></script>
+  <script src="/static/common/js/header.js?v=1.7.3"></script>
   <script src="/static/common/js/footer.js?v=1.7.0"></script>
   <script src="/static/common/js/batch-sse.js"></script>
   <script src="/static/common/js/toast.js"></script>

@@ -32,6 +32,7 @@ const NUMERIC_FIELDS = new Set([
   'medium_min_bytes',
   'blocked_parallel_attempts',
   'auto_check_interval_hours',
+  'retention_days',
   'concurrent',
   'batch_size'
 ]);
@@ -184,6 +185,11 @@ const LOCALE_MAP = {
     "auto_check_enabled": { title: "启用定时检测", desc: "定时检测所有账号可用性。" },
     "auto_check_interval_hours": { title: "检测间隔（小时）", desc: "定时检测执行的时间间隔。" },
     "auto_clean_expired": { title: "自动清理失效账号", desc: "检测后自动删除已失效账号。" }
+  },
+
+  "call_log": {
+    "label": "调用日志",
+    "retention_days": { title: "保留天数", desc: "调用日志保留天数，0 表示永久保存。" }
   }
 };
 
@@ -668,3 +674,16 @@ async function copyToClipboard(text, btn) {
 }
 
 window.onload = init;
+
+Object.assign(LOCALE_MAP, {
+  account: {
+    label: "账号检测",
+    auto_check_enabled: { title: "启用定时检测", desc: "定时检测所有账号可用性。" },
+    auto_check_interval_hours: { title: "检测间隔（小时）", desc: "定时检测执行的时间间隔。" },
+    auto_clean_expired: { title: "自动清理失效账号", desc: "检测后自动删除已失效账号。" }
+  },
+  call_log: {
+    label: "调用日志",
+    retention_days: { title: "保留天数", desc: "调用日志保留天数，0 表示永久保存。" }
+  }
+});

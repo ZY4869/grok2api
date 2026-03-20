@@ -2,6 +2,7 @@ let apiKey = "";
 let allTokens = [];
 let pendingConfirmFn = null;
 let importController = null;
+let editingToken = null;
 
 const byId = (id) => document.getElementById(id);
 const CHECK_ALL_BUTTON_HTML = `
@@ -182,6 +183,10 @@ function renderTable() {
       </span>
     `;
 
+    const emailCell = document.createElement("td");
+    emailCell.className = "text-left text-sm";
+    emailCell.textContent = item.email || "-";
+
     const poolCell = document.createElement("td");
     poolCell.className = "text-center";
     poolCell.innerHTML = `<span class="badge badge-gray">${escapeHtml(item.pool)}</span>`;
@@ -208,6 +213,15 @@ function renderTable() {
     actionCell.className = "text-center";
     const actionGroup = document.createElement("div");
     actionGroup.className = "flex items-center justify-center gap-1";
+
+    actionGroup.appendChild(
+      createIconButton({
+        title: "编辑",
+        className: "p-1 text-gray-400 hover:text-blue-600 rounded",
+        svg: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
+        onClick: () => openEditModal(index),
+      })
+    );
 
     actionGroup.appendChild(
       createIconButton({
@@ -258,6 +272,7 @@ function renderTable() {
 
     row.appendChild(checkCell);
     row.appendChild(tokenCell);
+    row.appendChild(emailCell);
     row.appendChild(poolCell);
     row.appendChild(aliveCell);
     row.appendChild(nsfwCell);
@@ -292,6 +307,7 @@ async function loadAccountData() {
         const tokenInfo = typeof item === "string" ? { token: item } : item || {};
         allTokens.push({
           token: tokenInfo.token || "",
+          email: tokenInfo.email || "",
           pool,
           status: tokenInfo.status || "active",
           alive: tokenInfo.alive ?? null,
@@ -660,6 +676,100 @@ function deleteSingle(token) {
   });
 }
 
+function openEditModal(index) {
+  const item = allTokens[index];
+  const modal = byId("edit-modal");
+  if (!item || !modal) return;
+
+  editingToken = item.token;
+  const tokenNode = byId("edit-token-display");
+  const emailInput = byId("edit-email");
+  const poolInput = byId("edit-pool");
+
+  if (tokenNode) tokenNode.textContent = item.token;
+  if (emailInput) emailInput.value = item.email || "";
+  if (poolInput) poolInput.value = item.pool || "ssoBasic";
+
+  modal.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    modal.classList.add("is-open");
+  });
+}
+
+function closeEditModal() {
+  const modal = byId("edit-modal");
+  editingToken = null;
+  if (!modal) return;
+
+  modal.classList.remove("is-open");
+  setTimeout(() => {
+    modal.classList.add("hidden");
+  }, 200);
+}
+
+async function saveEditToken() {
+  if (!editingToken) return;
+
+  const emailInput = byId("edit-email");
+  const poolInput = byId("edit-pool");
+  const nextEmail = (emailInput && emailInput.value.trim()) || "";
+  const nextPool = (poolInput && poolInput.value) || "ssoBasic";
+
+  try {
+    const data = await fetchTokenState();
+    const tokensByPool = data.tokens || {};
+    let targetItem = null;
+    let previousPool = null;
+
+    Object.entries(tokensByPool).forEach(([pool, list]) => {
+      if (!Array.isArray(list)) return;
+
+      tokensByPool[pool] = list.filter((entry) => {
+        const tokenInfo = typeof entry === "string" ? { token: entry } : { ...entry };
+        if (tokenInfo.token !== editingToken) return true;
+        targetItem = tokenInfo;
+        previousPool = pool;
+        return false;
+      });
+    });
+
+    if (!targetItem) {
+      throw new Error("未找到要编辑的账号");
+    }
+
+    targetItem.email = nextEmail;
+    if (!tokensByPool[nextPool]) tokensByPool[nextPool] = [];
+
+    const duplicateIndex = tokensByPool[nextPool].findIndex((entry) => {
+      const tokenInfo = typeof entry === "string" ? { token: entry } : entry || {};
+      return tokenInfo.token === editingToken;
+    });
+
+    if (duplicateIndex >= 0) {
+      const existingEntry = tokensByPool[nextPool][duplicateIndex];
+      const normalizedExisting =
+        typeof existingEntry === "string" ? { token: existingEntry } : existingEntry || {};
+      tokensByPool[nextPool][duplicateIndex] = {
+        ...normalizedExisting,
+        ...targetItem,
+      };
+    } else {
+      tokensByPool[nextPool].push(targetItem);
+    }
+
+    await saveTokenState(tokensByPool);
+    closeEditModal();
+    await loadAccountData();
+    showToast(
+      previousPool === nextPool ? "账号信息已更新" : "账号已更新并移动到新的 Pool",
+      "success"
+    );
+  } catch (error) {
+    console.error(error);
+    showToast(`保存失败：${error.message}`, "error");
+  }
+}
+
 function downloadFile(content, filename, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -676,12 +786,13 @@ function exportTokens() {
     return;
   }
 
-  const lines = ["token,pool,status,alive,nsfw,quota"];
+  const lines = ["token,pool,email,status,alive,nsfw,quota"];
   allTokens.forEach((item) => {
     lines.push(
       [
         item.token,
         item.pool,
+        item.email || "",
         item.status,
         item.alive === true ? "yes" : item.alive === false ? "no" : "unknown",
         hasNsfwTag(item) ? "yes" : "no",

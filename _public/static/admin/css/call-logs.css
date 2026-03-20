@@ -1,0 +1,93 @@
+.call-log-panel {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 18px;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.05);
+}
+
+.call-log-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.call-log-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accents-5);
+}
+
+.call-log-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.call-log-summary-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(250, 250, 250, 0.82));
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.call-log-summary-card strong {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.call-log-summary-label {
+  font-size: 12px;
+  color: var(--accents-4);
+}
+
+.call-log-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.call-log-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.call-log-status-badge[data-status="success"] {
+  background: rgba(22, 163, 74, 0.12);
+  color: rgb(21, 128, 61);
+}
+
+.call-log-status-badge[data-status="fail"] {
+  background: rgba(220, 38, 38, 0.1);
+  color: rgb(185, 28, 28);
+}
+
+.call-log-secondary {
+  color: var(--accents-4);
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .call-log-panel {
+    padding: 14px;
+  }
+
+  .call-log-summary-card strong {
+    font-size: 24px;
+  }
+}

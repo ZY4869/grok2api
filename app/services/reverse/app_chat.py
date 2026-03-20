@@ -3,6 +3,7 @@ Reverse interface: app chat conversations.
 """
 
 import orjson
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
@@ -16,6 +17,22 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import extract_status_for_retry, retry_on_status
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
+
+
+def _merge_request_overrides(
+    base: Dict[str, Any], overrides: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Recursively merge request-level overrides into the payload."""
+    if not overrides:
+        return base
+
+    merged = deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_request_overrides(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _normalize_chat_proxy(proxy_url: str) -> str:
@@ -52,6 +69,7 @@ class AppChatReverse:
         model: str,
         mode: str = None,
         file_attachments: List[str] = None,
+        request_overrides: Dict[str, Any] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
@@ -88,7 +106,7 @@ class AppChatReverse:
             "returnRawGrokInXaiRequest": False,
             "sendFinalMetadata": True,
             "temporary": get_config("app.temporary"),
-            "toolOverrides": tool_overrides or {},
+            "toolOverrides": {},
         }
 
         if use_mode_id:
@@ -108,6 +126,9 @@ class AppChatReverse:
         if custom_personality is not None:
             payload["customPersonality"] = custom_personality
 
+        payload = _merge_request_overrides(payload, request_overrides)
+        payload["toolOverrides"] = tool_overrides or {}
+
         if model_config_override:
             payload["responseMetadata"]["modelConfigOverride"] = model_config_override
 
@@ -124,6 +145,7 @@ class AppChatReverse:
         model: str,
         mode: str = None,
         file_attachments: List[str] = None,
+        request_overrides: Dict[str, Any] = None,
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
@@ -137,6 +159,7 @@ class AppChatReverse:
             model: str, the model to use.
             mode: str, the mode to use.
             file_attachments: List[str], the file attachments to send.
+            request_overrides: Dict[str, Any], request-level payload overrides.
             tool_overrides: Dict[str, Any], the tool overrides to use.
             model_config_override: Dict[str, Any], the model config override to use.
             use_mode_id: bool, use modeId-based request format.
@@ -159,6 +182,7 @@ class AppChatReverse:
                 model=model,
                 mode=mode,
                 file_attachments=file_attachments,
+                request_overrides=request_overrides,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
                 use_mode_id=use_mode_id,
@@ -166,6 +190,9 @@ class AppChatReverse:
             payload_summary = {
                 "model": payload.get("modelName"),
                 "mode": payload.get("modelMode"),
+                "mode_id": payload.get("modeId"),
+                "image_generation_count": payload.get("imageGenerationCount"),
+                "enable_nsfw": payload.get("enableNsfw"),
                 "message_len": payload.get("message") or "",
                 "file_attachments": len(payload.get("fileAttachments") or []),
                 "custom_personality_len": len(payload.get("customPersonality") or ""),

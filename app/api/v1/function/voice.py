@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core.auth import verify_function_key
+from app.core.call_log import begin_call_log, log_call_success
 from app.core.exceptions import AppException
 from app.services.grok.services.voice import VoiceService
 from app.services.token.manager import get_token_manager
@@ -27,6 +28,7 @@ async def function_voice_token(
     speed: float = 1.0,
 ):
     """获取 Grok Voice Mode (LiveKit) Token"""
+    begin_call_log("function.voice.token", model="voice-token")
     token_mgr = await get_token_manager()
     sso_token = None
     for pool_name in ("ssoBasic", "ssoSuper"):
@@ -57,12 +59,14 @@ async def function_voice_token(
                 status_code=502,
             )
 
-        return VoiceTokenResponse(
+        response = VoiceTokenResponse(
             token=token,
             url="wss://livekit.grok.com",
             participant_name="",
             room_name="",
         )
+        await log_call_success()
+        return response
 
     except Exception as e:
         if isinstance(e, AppException):

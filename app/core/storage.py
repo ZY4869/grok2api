@@ -36,6 +36,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 # 配置文件路径
 CONFIG_FILE = DATA_DIR / "config.toml"
 TOKEN_FILE = DATA_DIR / "token.json"
+CALL_LOG_FILE = DATA_DIR / "call_logs.jsonl"
 LOCK_DIR = DATA_DIR / ".locks"
 
 
@@ -72,6 +73,185 @@ def has_token_entries(data: Any) -> bool:
     return False
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _normalize_call_log_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(record or {})
+    return {
+        "id": str(payload.get("id") or "").strip(),
+        "created_at": _coerce_int(payload.get("created_at")),
+        "status": str(payload.get("status") or "").strip().lower() or "fail",
+        "api_type": str(payload.get("api_type") or "").strip(),
+        "model": str(payload.get("model") or "").strip(),
+        "email": str(payload.get("email") or "").strip(),
+        "token": str(payload.get("token") or "").strip(),
+        "pool": str(payload.get("pool") or "").strip(),
+        "duration_ms": max(0, _coerce_int(payload.get("duration_ms"))),
+        "trace_id": str(payload.get("trace_id") or "").strip(),
+        "error_code": str(payload.get("error_code") or "").strip(),
+        "error_message": str(payload.get("error_message") or "").strip(),
+    }
+
+
+def _normalize_call_log_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = dict(filters or {})
+    page = max(1, _coerce_int(payload.get("page"), 1))
+    page_size = _coerce_int(payload.get("page_size"), 50)
+    if page_size <= 0:
+        page_size = 50
+    page_size = min(page_size, 200)
+    return {
+        "status": str(payload.get("status") or "").strip().lower(),
+        "api_type": str(payload.get("api_type") or "").strip().lower(),
+        "model": str(payload.get("model") or "").strip().lower(),
+        "account_keyword": str(payload.get("account_keyword") or "").strip().lower(),
+        "date_from": _coerce_int(payload.get("date_from"), 0),
+        "date_to": _coerce_int(payload.get("date_to"), 0),
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def _match_call_log_filters(record: Dict[str, Any], filters: Dict[str, Any]) -> bool:
+    created_at = _coerce_int(record.get("created_at"))
+    date_from = filters.get("date_from") or 0
+    date_to = filters.get("date_to") or 0
+    if date_from and created_at < date_from:
+        return False
+    if date_to and created_at > date_to:
+        return False
+
+    status = filters.get("status")
+    if status and status not in ("all", "any") and record.get("status") != status:
+        return False
+
+    api_type = filters.get("api_type")
+    if api_type and api_type not in str(record.get("api_type") or "").lower():
+        return False
+
+    model = filters.get("model")
+    if model and model not in str(record.get("model") or "").lower():
+        return False
+
+    keyword = filters.get("account_keyword")
+    if keyword:
+        haystack = " ".join(
+            [
+                str(record.get("email") or "").lower(),
+                str(record.get("token") or "").lower(),
+                str(record.get("pool") or "").lower(),
+            ]
+        )
+        if keyword not in haystack:
+            return False
+
+    return True
+
+
+def _build_call_log_response(
+    records: list[Dict[str, Any]], filters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    normalized_filters = _normalize_call_log_filters(filters)
+    normalized_records = [
+        _normalize_call_log_record(record)
+        for record in (records or [])
+        if isinstance(record, dict)
+    ]
+    filtered = [
+        record
+        for record in normalized_records
+        if _match_call_log_filters(record, normalized_filters)
+    ]
+    filtered.sort(
+        key=lambda item: (_coerce_int(item.get("created_at")), str(item.get("id") or "")),
+        reverse=True,
+    )
+
+    success_count = sum(1 for item in filtered if item.get("status") == "success")
+    fail_count = sum(1 for item in filtered if item.get("status") == "fail")
+    avg_duration = (
+        round(sum(_coerce_int(item.get("duration_ms")) for item in filtered) / len(filtered), 2)
+        if filtered
+        else 0
+    )
+
+    account_map: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for item in filtered:
+        key = (str(item.get("token") or ""), str(item.get("pool") or ""))
+        bucket = account_map.get(key)
+        if not bucket:
+            bucket = {
+                "email": str(item.get("email") or ""),
+                "token": key[0],
+                "pool": key[1],
+                "call_count": 0,
+                "success_count": 0,
+                "fail_count": 0,
+                "avg_duration_ms": 0,
+                "last_called_at": 0,
+                "_duration_total": 0,
+            }
+            account_map[key] = bucket
+
+        bucket["call_count"] += 1
+        if item.get("status") == "success":
+            bucket["success_count"] += 1
+        else:
+            bucket["fail_count"] += 1
+        bucket["_duration_total"] += _coerce_int(item.get("duration_ms"))
+        bucket["last_called_at"] = max(
+            _coerce_int(bucket.get("last_called_at")),
+            _coerce_int(item.get("created_at")),
+        )
+        if not bucket.get("email") and item.get("email"):
+            bucket["email"] = item.get("email")
+
+    accounts = list(account_map.values())
+    for item in accounts:
+        call_count = max(1, _coerce_int(item.get("call_count"), 1))
+        item["avg_duration_ms"] = round(item.pop("_duration_total", 0) / call_count, 2)
+    accounts.sort(
+        key=lambda item: (
+            _coerce_int(item.get("call_count")),
+            _coerce_int(item.get("last_called_at")),
+        ),
+        reverse=True,
+    )
+
+    page = normalized_filters["page"]
+    page_size = normalized_filters["page_size"]
+    total_items = len(filtered)
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return {
+        "items": filtered[start:end],
+        "summary": {
+            "total_calls": total_items,
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "avg_duration_ms": avg_duration,
+            "unique_accounts": len(accounts),
+        },
+        "accounts": accounts,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_items": total_items,
+            "total_pages": total_pages,
+        },
+    }
+
+
 class StorageError(Exception):
     """存储服务基础异常"""
 
@@ -99,6 +279,28 @@ class BaseStorage(abc.ABC):
     @abc.abstractmethod
     async def save_tokens(self, data: Dict[str, Any]):
         """保存所有 Token"""
+        pass
+
+    @abc.abstractmethod
+    async def append_call_log(self, record: Dict[str, Any]):
+        """Append one call log record."""
+        pass
+
+    @abc.abstractmethod
+    async def query_call_logs(
+        self, filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Query call logs."""
+        pass
+
+    @abc.abstractmethod
+    async def cleanup_call_logs(self, retention_days: int) -> int:
+        """Cleanup expired call logs."""
+        pass
+
+    @abc.abstractmethod
+    async def clear_call_logs(self) -> int:
+        """Clear all call logs."""
         pass
 
     async def save_tokens_delta(
@@ -310,6 +512,73 @@ class LocalStorage(BaseStorage):
             logger.error(f"LocalStorage: 保存 Token 失败: {e}")
             raise StorageError(f"保存 Token 失败: {e}")
 
+    async def _read_call_logs(self) -> list[Dict[str, Any]]:
+        if not CALL_LOG_FILE.exists():
+            return []
+
+        records: list[Dict[str, Any]] = []
+        try:
+            async with aiofiles.open(CALL_LOG_FILE, "r", encoding="utf-8") as f:
+                async for line in f:
+                    line = str(line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json_loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(payload, dict):
+                        records.append(_normalize_call_log_record(payload))
+        except Exception as e:
+            logger.error(f"LocalStorage: 鍔犺浇 call logs 澶辫触: {e}")
+        return records
+
+    async def _write_call_logs(self, records: list[Dict[str, Any]]):
+        CALL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = CALL_LOG_FILE.with_suffix(".tmp")
+        async with aiofiles.open(temp_path, "w", encoding="utf-8") as f:
+            for record in records:
+                await f.write(json_dumps(_normalize_call_log_record(record)))
+                await f.write("\n")
+        os.replace(temp_path, CALL_LOG_FILE)
+
+    async def append_call_log(self, record: Dict[str, Any]):
+        CALL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(CALL_LOG_FILE, "a", encoding="utf-8") as f:
+            await f.write(json_dumps(_normalize_call_log_record(record)))
+            await f.write("\n")
+
+    async def query_call_logs(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        records = await self._read_call_logs()
+        return _build_call_log_response(records, filters)
+
+    async def cleanup_call_logs(self, retention_days: int) -> int:
+        retention_days = _coerce_int(retention_days)
+        if retention_days <= 0:
+            return 0
+
+        cutoff_ms = int(time.time() * 1000) - (retention_days * 24 * 3600 * 1000)
+        records = await self._read_call_logs()
+        kept = [
+            record
+            for record in records
+            if _coerce_int(record.get("created_at")) >= cutoff_ms
+        ]
+        removed = len(records) - len(kept)
+        if removed <= 0:
+            return 0
+        if kept:
+            await self._write_call_logs(kept)
+        elif CALL_LOG_FILE.exists():
+            CALL_LOG_FILE.unlink()
+        return removed
+
+    async def clear_call_logs(self) -> int:
+        records = await self._read_call_logs()
+        if CALL_LOG_FILE.exists():
+            CALL_LOG_FILE.unlink()
+        return len(records)
+
     async def close(self):
         pass
 
@@ -337,6 +606,8 @@ class RedisStorage(BaseStorage):
         self.key_pools = "grok2api:pools"  # Set: pool_names
         self.prefix_pool_set = "grok2api:pool:"  # Set: pool -> token_ids
         self.prefix_token_hash = "grok2api:token:"  # Hash: token_id -> token_data
+        self.call_log_index_key = "grok2api:call_logs"  # ZSet: created_at -> log_id
+        self.call_log_prefix = "grok2api:call_log:"  # Hash: log_id -> log data
         self.lock_prefix = "grok2api:lock:"
 
     @asynccontextmanager
@@ -570,6 +841,67 @@ class RedisStorage(BaseStorage):
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
             raise
 
+    async def _load_call_logs(self) -> list[Dict[str, Any]]:
+        ids = await self.redis.zrevrange(self.call_log_index_key, 0, -1)
+        if not ids:
+            return []
+
+        async with self.redis.pipeline() as pipe:
+            for log_id in ids:
+                pipe.hgetall(f"{self.call_log_prefix}{log_id}")
+            payloads = await pipe.execute()
+
+        records: list[Dict[str, Any]] = []
+        for payload in payloads:
+            if not payload:
+                continue
+            records.append(_normalize_call_log_record(payload))
+        return records
+
+    async def append_call_log(self, record: Dict[str, Any]):
+        payload = _normalize_call_log_record(record)
+        log_id = payload.get("id")
+        mapping = {k: str(v) for k, v in payload.items() if v is not None}
+        async with self.redis.pipeline() as pipe:
+            pipe.hset(f"{self.call_log_prefix}{log_id}", mapping=mapping)
+            pipe.zadd(self.call_log_index_key, {log_id: payload.get("created_at", 0)})
+            await pipe.execute()
+
+    async def query_call_logs(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        records = await self._load_call_logs()
+        return _build_call_log_response(records, filters)
+
+    async def cleanup_call_logs(self, retention_days: int) -> int:
+        retention_days = _coerce_int(retention_days)
+        if retention_days <= 0:
+            return 0
+
+        cutoff_ms = int(time.time() * 1000) - (retention_days * 24 * 3600 * 1000)
+        expired_ids = await self.redis.zrangebyscore(
+            self.call_log_index_key, min="-inf", max=cutoff_ms - 1
+        )
+        if not expired_ids:
+            return 0
+
+        async with self.redis.pipeline() as pipe:
+            for log_id in expired_ids:
+                pipe.delete(f"{self.call_log_prefix}{log_id}")
+            pipe.zrem(self.call_log_index_key, *expired_ids)
+            await pipe.execute()
+        return len(expired_ids)
+
+    async def clear_call_logs(self) -> int:
+        ids = await self.redis.zrange(self.call_log_index_key, 0, -1)
+        if not ids:
+            return 0
+
+        async with self.redis.pipeline() as pipe:
+            for log_id in ids:
+                pipe.delete(f"{self.call_log_prefix}{log_id}")
+            pipe.delete(self.call_log_index_key)
+            await pipe.execute()
+        return len(ids)
+
     async def close(self):
         try:
             await self.redis.close()
@@ -623,6 +955,7 @@ class SQLStorage(BaseStorage):
                     CREATE TABLE IF NOT EXISTS tokens (
                         token VARCHAR(512) PRIMARY KEY,
                         pool_name VARCHAR(64) NOT NULL,
+                        email VARCHAR(255),
                         status VARCHAR(16),
                         quota INT,
                         created_at BIGINT,
@@ -645,6 +978,25 @@ class SQLStorage(BaseStorage):
                 # 配置表
                 await conn.execute(
                     text("""
+                    CREATE TABLE IF NOT EXISTS call_logs (
+                        id VARCHAR(64) PRIMARY KEY,
+                        created_at BIGINT NOT NULL,
+                        status VARCHAR(16),
+                        api_type VARCHAR(128),
+                        model VARCHAR(255),
+                        email VARCHAR(255),
+                        token VARCHAR(512),
+                        pool VARCHAR(64),
+                        duration_ms BIGINT,
+                        trace_id VARCHAR(128),
+                        error_code VARCHAR(128),
+                        error_message TEXT
+                    )
+                """)
+                )
+
+                await conn.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS app_config (
                         section VARCHAR(64) NOT NULL,
                         key_name VARCHAR(64) NOT NULL,
@@ -661,6 +1013,26 @@ class SQLStorage(BaseStorage):
                             "CREATE INDEX IF NOT EXISTS idx_tokens_pool ON tokens (pool_name)"
                         )
                     )
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS idx_call_logs_created_at ON call_logs (created_at)"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS idx_call_logs_status ON call_logs (status)"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS idx_call_logs_token ON call_logs (token)"
+                        )
+                    )
+                    await conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS idx_call_logs_api_type ON call_logs (api_type)"
+                        )
+                    )
                 else:
                     try:
                         await conn.execute(
@@ -668,9 +1040,20 @@ class SQLStorage(BaseStorage):
                         )
                     except Exception:
                         pass
+                    for statement in (
+                        "CREATE INDEX idx_call_logs_created_at ON call_logs (created_at)",
+                        "CREATE INDEX idx_call_logs_status ON call_logs (status)",
+                        "CREATE INDEX idx_call_logs_token ON call_logs (token)",
+                        "CREATE INDEX idx_call_logs_api_type ON call_logs (api_type)",
+                    ):
+                        try:
+                            await conn.execute(text(statement))
+                        except Exception:
+                            pass
 
                 # 补齐旧表字段
                 columns = [
+                    ("email", "VARCHAR(255)"),
                     ("status", "VARCHAR(16)"),
                     ("quota", "INT"),
                     ("created_at", "BIGINT"),
@@ -780,6 +1163,7 @@ class SQLStorage(BaseStorage):
         return {
             "token": token_str,
             "pool_name": pool_name,
+            "email": str(token_data.get("email") or "").strip() or None,
             "status": status,
             "quota": token_data.get("quota"),
             "created_at": token_data.get("created_at"),
@@ -856,6 +1240,7 @@ class SQLStorage(BaseStorage):
                     text(
                         "UPDATE tokens SET "
                         "pool_name=:pool_name, "
+                        "email=:email, "
                         "status=:status, "
                         "quota=:quota, "
                         "created_at=:created_at, "
@@ -1000,7 +1385,7 @@ class SQLStorage(BaseStorage):
             async with self.async_session() as session:
                 res = await session.execute(
                     text(
-                        "SELECT token, pool_name, status, quota, created_at, "
+                        "SELECT token, pool_name, email, status, quota, created_at, "
                         "last_used_at, use_count, fail_count, last_fail_at, "
                         "last_fail_reason, last_sync_at, tags, note, "
                         "last_asset_clear_at, data "
@@ -1015,6 +1400,7 @@ class SQLStorage(BaseStorage):
                 for (
                     token_str,
                     pool_name,
+                    email,
                     status,
                     quota,
                     created_at,
@@ -1036,6 +1422,8 @@ class SQLStorage(BaseStorage):
                         token_data = {}
                         if token_str:
                             token_data["token"] = token_str
+                        if email:
+                            token_data["email"] = email
                         if status is not None:
                             token_data["status"] = self._normalize_status(status)
                         if quota is not None:
@@ -1174,16 +1562,17 @@ class SQLStorage(BaseStorage):
                 if updates:
                     if self.dialect in ("mysql", "mariadb"):
                         upsert_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at) "
                             "ON DUPLICATE KEY UPDATE "
                             "pool_name=VALUES(pool_name), "
+                            "email=VALUES(email), "
                             "status=VALUES(status), "
                             "quota=VALUES(quota), "
                             "created_at=VALUES(created_at), "
@@ -1202,16 +1591,17 @@ class SQLStorage(BaseStorage):
                         )
                     elif self.dialect in ("postgres", "postgresql", "pgsql"):
                         upsert_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at) "
                             "ON CONFLICT (token) DO UPDATE SET "
                             "pool_name=EXCLUDED.pool_name, "
+                            "email=EXCLUDED.email, "
                             "status=EXCLUDED.status, "
                             "quota=EXCLUDED.quota, "
                             "created_at=EXCLUDED.created_at, "
@@ -1230,11 +1620,11 @@ class SQLStorage(BaseStorage):
                         )
                     else:
                         upsert_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at)"
@@ -1244,11 +1634,11 @@ class SQLStorage(BaseStorage):
                 if usage_updates:
                     if self.dialect in ("mysql", "mariadb"):
                         usage_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at) "
@@ -1266,11 +1656,11 @@ class SQLStorage(BaseStorage):
                         )
                     elif self.dialect in ("postgres", "postgresql", "pgsql"):
                         usage_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at) "
@@ -1288,11 +1678,11 @@ class SQLStorage(BaseStorage):
                         )
                     else:
                         usage_stmt = text(
-                            "INSERT INTO tokens (token, pool_name, status, quota, created_at, "
+                            "INSERT INTO tokens (token, pool_name, email, status, quota, created_at, "
                             "last_used_at, use_count, fail_count, last_fail_at, "
                             "last_fail_reason, last_sync_at, tags, note, "
                             "last_asset_clear_at, data, data_hash, updated_at) "
-                            "VALUES (:token, :pool_name, :status, :quota, :created_at, "
+                            "VALUES (:token, :pool_name, :email, :status, :quota, :created_at, "
                             ":last_used_at, :use_count, :fail_count, :last_fail_at, "
                             ":last_fail_reason, :last_sync_at, :tags, :note, "
                             ":last_asset_clear_at, :data, :data_hash, :updated_at)"
@@ -1303,6 +1693,114 @@ class SQLStorage(BaseStorage):
         except Exception as e:
             logger.error(f"SQLStorage: 增量保存 Token 失败: {e}")
             raise
+
+    async def _load_call_logs(self) -> list[Dict[str, Any]]:
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        try:
+            async with self.async_session() as session:
+                res = await session.execute(
+                    text(
+                        "SELECT id, created_at, status, api_type, model, email, token, pool, "
+                        "duration_ms, trace_id, error_code, error_message "
+                        "FROM call_logs"
+                    )
+                )
+                rows = res.fetchall()
+        except Exception as e:
+            logger.error(f"SQLStorage: 鍔犺浇 call logs 澶辫触: {e}")
+            return []
+
+        records: list[Dict[str, Any]] = []
+        for row in rows:
+            records.append(
+                _normalize_call_log_record(
+                    {
+                        "id": row[0],
+                        "created_at": row[1],
+                        "status": row[2],
+                        "api_type": row[3],
+                        "model": row[4],
+                        "email": row[5],
+                        "token": row[6],
+                        "pool": row[7],
+                        "duration_ms": row[8],
+                        "trace_id": row[9],
+                        "error_code": row[10],
+                        "error_message": row[11],
+                    }
+                )
+            )
+        return records
+
+    async def append_call_log(self, record: Dict[str, Any]):
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        payload = _normalize_call_log_record(record)
+        try:
+            async with self.async_session() as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO call_logs (id, created_at, status, api_type, model, email, token, pool, "
+                        "duration_ms, trace_id, error_code, error_message) "
+                        "VALUES (:id, :created_at, :status, :api_type, :model, :email, :token, :pool, "
+                        ":duration_ms, :trace_id, :error_code, :error_message)"
+                    ),
+                    payload,
+                )
+                await session.commit()
+        except Exception as e:
+            logger.error(f"SQLStorage: 淇濆瓨 call log 澶辫触: {e}")
+            raise
+
+    async def query_call_logs(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        records = await self._load_call_logs()
+        return _build_call_log_response(records, filters)
+
+    async def cleanup_call_logs(self, retention_days: int) -> int:
+        await self._ensure_schema()
+        retention_days = _coerce_int(retention_days)
+        if retention_days <= 0:
+            return 0
+
+        from sqlalchemy import text
+
+        cutoff_ms = int(time.time() * 1000) - (retention_days * 24 * 3600 * 1000)
+        try:
+            async with self.async_session() as session:
+                res = await session.execute(
+                    text("SELECT COUNT(*) FROM call_logs WHERE created_at < :cutoff"),
+                    {"cutoff": cutoff_ms},
+                )
+                count = int(res.scalar() or 0)
+                if count > 0:
+                    await session.execute(
+                        text("DELETE FROM call_logs WHERE created_at < :cutoff"),
+                        {"cutoff": cutoff_ms},
+                    )
+                    await session.commit()
+                return count
+        except Exception as e:
+            logger.error(f"SQLStorage: 娓呯悊 call logs 澶辫触: {e}")
+            return 0
+
+    async def clear_call_logs(self) -> int:
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        try:
+            async with self.async_session() as session:
+                res = await session.execute(text("SELECT COUNT(*) FROM call_logs"))
+                count = int(res.scalar() or 0)
+                if count > 0:
+                    await session.execute(text("DELETE FROM call_logs"))
+                    await session.commit()
+                return count
+        except Exception as e:
+            logger.error(f"SQLStorage: 娓呯┖ call logs 澶辫触: {e}")
+            return 0
 
     async def close(self):
         await self.engine.dispose()

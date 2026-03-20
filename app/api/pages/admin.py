@@ -42,3 +42,8 @@ async def admin_token():
 @router.get("/admin/account", include_in_schema=False)
 async def admin_account():
     return _admin_page_response("admin/pages/account.html")
+
+
+@router.get("/admin/call-logs", include_in_schema=False)
+async def admin_call_logs():
+    return _admin_page_response("admin/pages/call-logs.html")

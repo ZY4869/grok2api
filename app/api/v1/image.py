@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Union
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -17,6 +17,7 @@ from app.services.grok.services.model import ModelService
 from app.services.token import get_token_manager
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.config import get_config
+from app.core.call_log import begin_call_log, wrap_call_log_stream
 
 
 router = APIRouter(tags=["Images"])
@@ -246,7 +247,7 @@ async def _get_token(model: str):
 
 
 @router.post("/images/generations")
-async def create_image(request: ImageGenerationRequest):
+async def create_image(body: ImageGenerationRequest, request: Request):
     """
     Image Generation API
 
@@ -258,42 +259,48 @@ async def create_image(request: ImageGenerationRequest):
     - {"created": ..., "data": [{"b64_json": "..."}], "usage": {...}}
     """
     # stream 默认为 false
-    if request.stream is None:
-        request.stream = False
+    begin_call_log(
+        "images.generations",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=body.model,
+    )
 
-    if request.response_format is None:
-        request.response_format = resolve_response_format(None)
+    if body.stream is None:
+        body.stream = False
+
+    if body.response_format is None:
+        body.response_format = resolve_response_format(None)
 
     # 参数验证
-    validate_generation_request(request)
+    validate_generation_request(body)
 
     # 兼容 base64/b64_json
-    if request.response_format == "base64":
-        request.response_format = "b64_json"
+    if body.response_format == "base64":
+        body.response_format = "b64_json"
 
-    response_format = resolve_response_format(request.response_format)
+    response_format = resolve_response_format(body.response_format)
     response_field = response_field_name(response_format)
 
     # 获取 token 和模型信息
-    token_mgr, token = await _get_token(request.model)
-    model_info = ModelService.get(request.model)
-    aspect_ratio = resolve_aspect_ratio(request.size)
+    token_mgr, token = await _get_token(body.model)
+    model_info = ModelService.get(body.model)
+    aspect_ratio = resolve_aspect_ratio(body.size)
 
     result = await ImageGenerationService().generate(
         token_mgr=token_mgr,
         token=token,
         model_info=model_info,
-        prompt=request.prompt,
-        n=request.n,
+        prompt=body.prompt,
+        n=body.n,
         response_format=response_format,
-        size=request.size,
+        size=body.size,
         aspect_ratio=aspect_ratio,
-        stream=bool(request.stream),
+        stream=bool(body.stream),
     )
 
     if result.stream:
         return StreamingResponse(
-            result.data,
+            wrap_call_log_stream(result.data),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -317,6 +324,7 @@ async def create_image(request: ImageGenerationRequest):
 
 @router.post("/images/edits")
 async def edit_image(
+    request: Request,
     prompt: str = Form(...),
     image: List[UploadFile] = File(...),
     model: Optional[str] = Form("grok-imagine-1.0-edit"),
@@ -332,6 +340,12 @@ async def edit_image(
 
     同官方 API 格式，仅支持 multipart/form-data 文件上传
     """
+    begin_call_log(
+        "images.edits",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=model or "grok-imagine-1.0-edit",
+    )
+
     if response_format is None:
         response_format = resolve_response_format(None)
 
@@ -428,7 +442,7 @@ async def edit_image(
 
     if result.stream:
         return StreamingResponse(
-            result.data,
+            wrap_call_log_stream(result.data),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )

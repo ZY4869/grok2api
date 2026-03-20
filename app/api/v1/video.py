@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from app.core.call_log import begin_call_log
 from app.core.exceptions import UpstreamException, ValidationException
 from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoService
@@ -434,6 +435,11 @@ async def create_video(request: Request):
         except ValidationError as exc:
             _raise_validation_error(exc)
         references = await _build_references_for_json(payload)
+        begin_call_log(
+            "videos.create",
+            trace_id=getattr(request.state, "trace_id", ""),
+            model=payload.model or VIDEO_MODEL_ID,
+        )
         return await _create_video_from_payload(payload, references, require_extension=False)
 
     form = await request.form()
@@ -447,23 +453,33 @@ async def create_video(request: Request):
         image_reference=form.get("image_reference"),
         input_reference=form.get("input_reference"),
     )
+    begin_call_log(
+        "videos.create",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=payload.model or VIDEO_MODEL_ID,
+    )
     return await _create_video_from_payload(payload, references, require_extension=False)
 
 
 @router.post(
     "/video/extend",
 )
-async def extend_video(request: VideoExtendDirectRequest):
+async def extend_video(body: VideoExtendDirectRequest, request: Request):
     """
     Extension endpoint (non-OpenAI-compatible direct mapping).
     """
+    begin_call_log(
+        "video.extend",
+        trace_id=getattr(request.state, "trace_id", ""),
+        model=VIDEO_MODEL_ID,
+    )
     result = await VideoExtendService.extend(
-        prompt=request.prompt,
-        reference_id=request.reference_id,
-        start_time=request.start_time,
-        ratio=request.ratio,
-        length=request.length,
-        resolution=request.resolution,
+        prompt=body.prompt,
+        reference_id=body.reference_id,
+        start_time=body.start_time,
+        ratio=body.ratio,
+        length=body.length,
+        resolution=body.resolution,
     )
     return JSONResponse(content=result)
 
