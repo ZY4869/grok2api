@@ -47,7 +47,7 @@ class RateLimitsReverse:
             # Build payload
             payload = {
                 "requestKind": "DEFAULT",
-                "modelName": "grok-4-1-thinking-1129",
+                "modelName": "grok-3",
             }
 
             # Curl Config
