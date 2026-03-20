@@ -107,23 +107,25 @@ docker compose up -d
 
 ## 可用模型
 
-| 模型名 | 计次 | 可用账号 | 对话功能 | 图像功能 | 视频功能 |
-| :-- | :--: | :-- | :--: | :--: | :--: |
-| `grok-3` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-3-mini` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-3-thinking` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-4` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-4-thinking` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-4-heavy` | 4 | Super | 支持 | 支持 | - |
-| `grok-4.1-mini` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-4.1-fast` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-4.1-expert` | 4 | Basic/Super | 支持 | 支持 | - |
-| `grok-4.1-thinking` | 4 | Basic/Super | 支持 | 支持 | - |
-| `grok-4.20-beta` | 1 | Basic/Super | 支持 | 支持 | - |
-| `grok-imagine-1.0` | - | Basic/Super | - | 支持 | - |
-| `grok-imagine-1.0-fast` | - | Basic/Super | - | 支持 | - |
-| `grok-imagine-1.0-edit` | - | Basic/Super | - | 支持 | - |
-| `grok-imagine-1.0-video` | - | Basic/Super | - | - | 支持 |
+> 对话模型全部使用 modeId 方式请求，与 Grok 网页行为一致。
+
+**对话模型（快捷模式）**
+
+| 模型名 | 底层模型 | 说明 | 可用账号 | 对话 | 图像 |
+| :-- | :-- | :-- | :-- | :--: | :--: |
+| `grok-auto` | grok-3/grok-4 | 自动选择 Fast 或 Expert | Basic/Super | 支持 | 支持 |
+| `grok-3-fast` | grok-3 | 快速响应 | Basic/Super | 支持 | 支持 |
+| `grok-4-expert` | grok-4 | 深度思考 | Basic/Super | 支持 | 支持 |
+| `grok-4-heavy` | grok-4 | SuperGrok Heavy | Super | 支持 | 支持 |
+
+**图片 / 视频模型**
+
+| 模型名 | 说明 | 可用账号 | 图像 | 视频 |
+| :-- | :-- | :-- | :--: | :--: |
+| `grok-imagine-1.0` | 图片生成 | Basic/Super | 支持 | - |
+| `grok-imagine-1.0-fast` | 快速图片生成 | Basic/Super | 支持 | - |
+| `grok-imagine-1.0-edit` | 图片编辑 | Basic/Super | 支持 | - |
+| `grok-imagine-1.0-video` | 视频生成 | Basic/Super | - | 支持 |
 
 <br>
 
@@ -140,7 +142,7 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4",
+    "model": "grok-auto",
     "messages": [{"role":"user","content":"你好"}]
   }'
 ```
@@ -215,7 +217,7 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4",
+    "model": "grok-auto",
     "input": "解释一下量子隧穿",
     "stream": true
   }'
