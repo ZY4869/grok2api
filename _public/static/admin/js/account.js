@@ -1,6 +1,5 @@
 let apiKey = '';
 let allTokens = [];
-let currentFilter = 'all';
 let pendingConfirmFn = null;
 
 function byId(id) { return document.getElementById(id); }
@@ -49,7 +48,6 @@ async function loadAccountData() {
       });
     });
 
-    updateStats();
     renderTable();
   } catch (e) {
     console.error(e);
@@ -57,54 +55,11 @@ async function loadAccountData() {
   }
 }
 
-function updateStats() {
-  const total = allTokens.length;
-  const alive = allTokens.filter(t => t.alive === true).length;
-  const dead = allTokens.filter(t => t.alive === false || t.status === 'expired').length;
-  const active = allTokens.filter(t => t.status === 'active').length;
-  const cooling = allTokens.filter(t => t.status === 'cooling').length;
-  const disabled = allTokens.filter(t => t.status === 'disabled' || t.status === 'expired').length;
-
-  byId('stat-total').textContent = total;
-  byId('stat-alive').textContent = alive;
-  byId('stat-expired').textContent = dead;
-  byId('stat-active').textContent = active;
-  byId('stat-cooling').textContent = cooling;
-  byId('stat-disabled').textContent = disabled;
-
-  // Tab counts
-  byId('tab-all').textContent = total;
-  byId('tab-active').textContent = active;
-  byId('tab-cooling').textContent = cooling;
-  byId('tab-expired').textContent = disabled;
-  byId('tab-alive').textContent = alive;
-  byId('tab-dead').textContent = dead;
-}
-
-function filterByStatus(status) {
-  currentFilter = status;
-  document.querySelectorAll('#status-tabs .tab-item').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === status);
-  });
-  renderTable();
-}
-
-function getFilteredTokens() {
-  if (currentFilter === 'all') return allTokens;
-  if (currentFilter === 'active') return allTokens.filter(t => t.status === 'active');
-  if (currentFilter === 'cooling') return allTokens.filter(t => t.status === 'cooling');
-  if (currentFilter === 'expired') return allTokens.filter(t => t.status === 'disabled' || t.status === 'expired');
-  if (currentFilter === 'alive') return allTokens.filter(t => t.alive === true);
-  if (currentFilter === 'dead') return allTokens.filter(t => t.alive === false || t.status === 'expired');
-  return allTokens;
-}
-
 function renderTable() {
   const tbody = byId('account-table-body');
   const empty = byId('empty-state');
-  const filtered = getFilteredTokens();
 
-  if (filtered.length === 0) {
+  if (allTokens.length === 0) {
     tbody.innerHTML = '';
     empty.classList.remove('hidden');
     return;
@@ -112,7 +67,7 @@ function renderTable() {
   empty.classList.add('hidden');
 
   const fragment = document.createDocumentFragment();
-  filtered.forEach((item, idx) => {
+  allTokens.forEach((item, idx) => {
     const tr = document.createElement('tr');
 
     // Token

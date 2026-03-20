@@ -26,15 +26,35 @@
     <div class="space-y-6">
       <div class="flex justify-between items-center">
         <div>
-          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="token.title">Token 列表</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm">用量监控与 Token 状态管理</p>
+          <h2 class="text-2xl font-semibold tracking-tight">概览</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">Token 用量与状态监控</p>
         </div>
       </div>
 
       <div class="h-px bg-[var(--border)] my-6"></div>
 
       <!-- Statistics -->
-      <div class="grid grid-cols-4 gap-4 mb-6" id="stats-container">
+      <div class="grid grid-cols-4 gap-4 mb-4" id="stats-container">
+        <!-- 账号统计 -->
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">-</div>
+          <div class="stat-label">Token 总数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-green-600" id="stat-active">-</div>
+          <div class="stat-label">Token 正常</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-orange-500" id="stat-cooling">-</div>
+          <div class="stat-label">Token 限流</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value text-red-600" id="stat-invalid">-</div>
+          <div class="stat-label">Token 失效</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <!-- 用量统计 -->
         <div class="stat-card">
           <div class="stat-value" id="stat-chat-quota">-</div>
           <div class="stat-label" data-i18n="token.statChatQuota">Chat 剩余</div>

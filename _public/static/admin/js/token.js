@@ -218,6 +218,12 @@ function updateStats(data) {
   const imageQuota = Math.floor(chatQuota / 2);
   const totalConsumed = flatTokens.reduce((sum, t) => sum + (t.consumed || 0), 0);
 
+  // 更新账号统计卡片
+  setText('stat-total', totalTokens.toLocaleString());
+  setText('stat-active', activeTokens.toLocaleString());
+  setText('stat-cooling', coolingTokens.toLocaleString());
+  setText('stat-invalid', invalidTokens.toLocaleString());
+
   // 根据配置决定显示消耗还是剩余
   if (consumedModeEnabled) {
     setText('stat-chat-quota', totalConsumed.toLocaleString());
