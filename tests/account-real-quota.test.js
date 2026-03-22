@@ -98,3 +98,23 @@ test("getRealQuotaState supports shortcut mode and wait state", () => {
   assert.match(state.modeHint, /快捷模式最终消耗对应底层模型额度/);
   assert.match(state.title, /3 Fast额度: 88\/1000/);
 });
+
+test("getRealQuotaState hides partial refresh warnings when live quota exists", () => {
+  const state = realQuota.getRealQuotaState({
+    real_tier: "SUBSCRIPTION_TIER_GROK_PRO",
+    real_quota: {
+      subscription_name: "SuperGrok",
+      partial_errors: ["refresh-subscription: Request failed, 501"],
+      rate_limits: {
+        "grok-3": { remainingTokens: 88, totalTokens: 1000 },
+      },
+    },
+    last_real_quota_check_at: 1711111111111,
+    last_real_quota_error: "",
+  }, { displayMode: "model" });
+
+  assert.equal(state.label, "SuperGrok");
+  assert.equal(state.error, "");
+  assert.equal(state.note, "");
+  assert.equal(state.rows[0][0].value, "88/1000");
+});
