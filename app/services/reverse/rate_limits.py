@@ -25,7 +25,13 @@ class RateLimitsReverse:
     """/rest/rate-limits reverse interface."""
 
     @staticmethod
-    async def request(session: AsyncSession, token: str) -> Any:
+    async def request(
+        session: AsyncSession,
+        token: str,
+        *,
+        model_name: str = "grok-3",
+        request_kind: str = "DEFAULT",
+    ) -> Any:
         """Fetch rate limits from Grok.
 
         Args:
@@ -45,10 +51,11 @@ class RateLimitsReverse:
             )
 
             # Build payload
-            payload = {
-                "requestKind": "DEFAULT",
-                "modelName": "grok-3",
-            }
+            payload = {}
+            if request_kind:
+                payload["requestKind"] = request_kind
+            if model_name:
+                payload["modelName"] = model_name
 
             # Curl Config
             timeout = get_config("usage.timeout")

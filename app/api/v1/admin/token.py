@@ -12,6 +12,7 @@ from app.core.storage import get_storage
 from app.services.grok.batch_services.usage import UsageService
 from app.services.grok.batch_services.nsfw import NSFWService
 from app.services.token.manager import get_token_manager
+from app.services.token.real_quota import RealQuotaRefreshService
 
 router = APIRouter()
 
@@ -41,6 +42,28 @@ def _sanitize_token_text(value) -> str:
     if token.startswith("sso="):
         token = token[4:]
     return token.encode("ascii", errors="ignore").decode("ascii")
+
+
+def _collect_request_tokens(data: dict, mgr=None, *, allow_all: bool = False) -> list[str]:
+    tokens = []
+    if isinstance(data.get("token"), str):
+        token = _sanitize_token_text(data.get("token"))
+        if token:
+            tokens.append(token)
+    if isinstance(data.get("tokens"), list):
+        for item in data["tokens"]:
+            token = _sanitize_token_text(item)
+            if token:
+                tokens.append(token)
+
+    if allow_all and not tokens and mgr:
+        for pool in mgr.pools.values():
+            for info in pool.list():
+                token = _sanitize_token_text(info.token)
+                if token:
+                    tokens.append(token)
+
+    return list(dict.fromkeys(tokens))
 
 
 @router.get("/tokens", dependencies=[Depends(verify_app_key)])
@@ -164,6 +187,57 @@ async def refresh_tokens(data: dict):
         response = {"status": "success", "results": results}
         return response
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tokens/real-quota/refresh", dependencies=[Depends(verify_app_key)])
+async def refresh_tokens_real_quota(data: dict):
+    """Refresh real subscription tier and live rate limits."""
+    try:
+        mgr = await get_token_manager()
+        tokens = _collect_request_tokens(data or {}, mgr, allow_all=True)
+        if not tokens:
+            raise HTTPException(status_code=400, detail="No tokens available")
+
+        service = RealQuotaRefreshService()
+        raw_results = await service.batch(tokens, mgr)
+
+        await mgr._save(force=True)
+
+        results = {}
+        ok_count = 0
+        fail_count = 0
+
+        for token, res in raw_results.items():
+            if res.get("ok"):
+                payload = dict(res.get("data") or {})
+                refresh_ok = bool(payload.get("refresh_ok", True))
+                if refresh_ok:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+                results[token] = payload
+                continue
+
+            fail_count += 1
+            results[token] = {
+                "refresh_ok": False,
+                "error": res.get("error") or "unknown_error",
+            }
+
+        return {
+            "status": "success",
+            "summary": {
+                "total": len(tokens),
+                "ok": ok_count,
+                "fail": fail_count,
+            },
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Refresh real quota failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

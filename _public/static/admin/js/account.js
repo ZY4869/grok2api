@@ -13,6 +13,13 @@ const CHECK_ALL_BUTTON_HTML = `
   全部检测
 `;
 
+const REFRESH_REAL_QUOTA_BUTTON_HTML = `
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-3.2-6.91"></path>
+    <polyline points="21 3 21 9 15 9"></polyline>
+  </svg>
+  真实额度`;
+
 function escapeHtml(value) {
   const div = document.createElement("div");
   div.textContent = value == null ? "" : String(value);
@@ -149,6 +156,65 @@ function getAliveDisplay(item) {
   return '<span class="text-gray-400" title="未检测">-</span>';
 }
 
+function createRealQuotaCell(item) {
+  const cell = document.createElement("td");
+  cell.className = "text-left real-quota-cell";
+
+  const helper =
+    window.AccountRealQuota &&
+    typeof window.AccountRealQuota.getRealQuotaState === "function"
+      ? window.AccountRealQuota
+      : null;
+  const state = helper
+    ? helper.getRealQuotaState(item)
+    : {
+        label: "未查询",
+        badgeClass: "badge-gray",
+        summary: "点击刷新真实额度",
+        meta: "",
+        error: "",
+        title: "",
+      };
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "real-quota-wrap";
+  if (state.title) {
+    wrapper.title = state.title;
+  }
+
+  const main = document.createElement("div");
+  main.className = "real-quota-main";
+
+  const badge = document.createElement("span");
+  badge.className = `badge ${state.badgeClass || "badge-gray"}`;
+  badge.textContent = state.label || "未查询";
+  main.appendChild(badge);
+
+  if (state.meta) {
+    const meta = document.createElement("span");
+    meta.className = "real-quota-meta";
+    meta.textContent = state.meta;
+    main.appendChild(meta);
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "real-quota-summary";
+  summary.textContent = state.summary || "点击刷新真实额度";
+
+  wrapper.appendChild(main);
+  wrapper.appendChild(summary);
+
+  if (state.error) {
+    const error = document.createElement("div");
+    error.className = "real-quota-error";
+    error.textContent = state.error;
+    wrapper.appendChild(error);
+  }
+
+  cell.appendChild(wrapper);
+  return cell;
+}
+
 function renderTable() {
   const tbody = byId("account-table-body");
   if (!tbody) return;
@@ -205,6 +271,8 @@ function renderTable() {
     quotaCell.className = "text-center font-mono text-xs";
     quotaCell.textContent = String(item.quota || 0);
 
+    const realQuotaCell = createRealQuotaCell(item);
+
     const lastCheckCell = document.createElement("td");
     lastCheckCell.className = "text-center text-xs text-gray-500";
     lastCheckCell.textContent = formatTime(item.last_alive_check_at);
@@ -229,6 +297,19 @@ function renderTable() {
         className: "p-1 text-gray-400 hover:text-green-600 rounded",
         svg: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>',
         onClick: () => checkSingleAlive(item.token),
+      })
+    );
+
+    actionGroup.appendChild(
+      createIconButton({
+        title: "刷新真实额度",
+        className: "p-1 text-gray-400 hover:text-purple-600 rounded",
+        svg: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3.2-6.91"></path><polyline points="21 3 21 9 15 9"></polyline></svg>',
+        onClick: () =>
+          refreshRealQuota([item.token], {
+            progressMessage: "正在刷新当前账号的真实额度...",
+            successMessage: "真实额度已刷新",
+          }),
       })
     );
 
@@ -277,6 +358,7 @@ function renderTable() {
     row.appendChild(aliveCell);
     row.appendChild(nsfwCell);
     row.appendChild(quotaCell);
+    row.appendChild(realQuotaCell);
     row.appendChild(lastCheckCell);
     row.appendChild(actionCell);
     fragment.appendChild(row);
@@ -312,6 +394,14 @@ async function loadAccountData() {
           status: tokenInfo.status || "active",
           alive: tokenInfo.alive ?? null,
           quota: tokenInfo.quota || 0,
+          real_tier: tokenInfo.real_tier || "",
+          real_tier_name: tokenInfo.real_tier_name || "",
+          real_quota:
+            tokenInfo.real_quota && typeof tokenInfo.real_quota === "object"
+              ? tokenInfo.real_quota
+              : null,
+          last_real_quota_check_at: tokenInfo.last_real_quota_check_at,
+          last_real_quota_error: tokenInfo.last_real_quota_error || "",
           tags: Array.isArray(tokenInfo.tags) ? tokenInfo.tags : [],
           last_alive_check_at: tokenInfo.last_alive_check_at,
           _selected: false,
@@ -344,6 +434,14 @@ function toggleSelectAll() {
 
 function getSelected() {
   return allTokens.filter((item) => item._selected);
+}
+
+function getRealQuotaTargets() {
+  const selected = getSelected();
+  if (selected.length > 0) {
+    return selected.map((item) => item.token);
+  }
+  return allTokens.map((item) => item.token);
 }
 
 async function updateTokenStatus(tokens, newStatus) {
@@ -490,6 +588,86 @@ async function batchEnableNSFW() {
     console.error(error);
     showToast(`开启 NSFW 失败：${error.message}`, "error");
   }
+}
+
+async function requestRealQuotaRefresh(tokens) {
+  const response = await fetch("/v1/admin/tokens/real-quota/refresh", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(apiKey),
+    },
+    body: JSON.stringify(Array.isArray(tokens) && tokens.length ? { tokens } : {}),
+  });
+  const data = await readJsonResponse(response);
+
+  if (!response.ok || !data || data.status !== "success") {
+    throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+async function refreshRealQuota(tokens, options = {}) {
+  const button = options.button || null;
+  const progress = byId("check-progress");
+  const buttonResetHtml = options.buttonResetHtml || REFRESH_REAL_QUOTA_BUTTON_HTML;
+  const progressMessage = options.progressMessage || "正在刷新真实额度...";
+  const successMessage = options.successMessage || "";
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中...";
+  }
+  if (progress) {
+    progress.textContent = progressMessage;
+    progress.classList.remove("hidden");
+  }
+
+  try {
+    const data = await requestRealQuotaRefresh(tokens);
+    const summary = data.summary || {};
+    await loadAccountData();
+
+    const okCount = Number(summary.ok || 0);
+    const failCount = Number(summary.fail || 0);
+    showToast(
+      successMessage || `真实额度刷新完成：成功 ${okCount}，失败 ${failCount}`,
+      failCount > 0 ? "warning" : "success"
+    );
+    return data;
+  } catch (error) {
+    console.error(error);
+    showToast(`真实额度刷新失败：${error.message}`, "error");
+    throw error;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = buttonResetHtml;
+    }
+    if (progress) {
+      progress.textContent = "";
+      progress.classList.add("hidden");
+    }
+  }
+}
+
+async function refreshSelectedOrAllRealQuota() {
+  const targets = getRealQuotaTargets();
+  if (targets.length === 0) {
+    showToast("没有账号可以刷新真实额度", "info");
+    return;
+  }
+
+  const selectedCount = getSelected().length;
+  const button = byId("btn-refresh-real-quota");
+  await refreshRealQuota(targets, {
+    button,
+    progressMessage:
+      selectedCount > 0
+        ? `正在刷新 ${selectedCount} 个选中账号的真实额度...`
+        : `正在刷新全部 ${targets.length} 个账号的真实额度...`,
+  });
 }
 
 async function checkAllAlive() {

@@ -115,3 +115,39 @@
   line-height: 1.6;
   color: #475569;
 }
+
+.real-quota-cell {
+  min-width: 230px;
+}
+
+.real-quota-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.real-quota-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.real-quota-meta {
+  font-size: 11px;
+  color: var(--accents-4);
+}
+
+.real-quota-summary {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--accents-5);
+  word-break: break-word;
+}
+
+.real-quota-error {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #b91c1c;
+  word-break: break-word;
+}

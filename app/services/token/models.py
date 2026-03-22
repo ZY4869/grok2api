@@ -9,7 +9,7 @@ Token 数据模型
 """
 
 from enum import Enum
-from typing import Optional, List
+from typing import Any, Optional, List
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
@@ -79,6 +79,11 @@ class TokenInfo(BaseModel):
     note: str = ""
     email: Optional[str] = None
     last_asset_clear_at: Optional[int] = None
+    real_tier: Optional[str] = None
+    real_tier_name: Optional[str] = None
+    real_quota: Optional[dict[str, Any]] = None
+    last_real_quota_check_at: Optional[int] = None
+    last_real_quota_error: Optional[str] = None
 
     @field_validator("token", mode="before")
     @classmethod
