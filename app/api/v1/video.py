@@ -10,12 +10,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import orjson
 from fastapi import APIRouter, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.core.call_log import begin_call_log
+from app.core.config import get_config
 from app.core.exceptions import UpstreamException, ValidationException
+from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoService
 from app.services.grok.services.video_extend import VideoExtendService
@@ -47,6 +49,7 @@ class VideoCreateRequest(BaseModel):
     size: Optional[str] = Field("1792x1024", description="Output size")
     seconds: Optional[int] = Field(6, description="Video length in seconds")
     quality: Optional[str] = Field("standard", description="Quality: standard/high")
+    delivery_mode: Optional[str] = Field(None, description="Delivery mode: url/file")
     image_reference: Optional[Any] = Field(None, description="Structured image reference")
     input_reference: Optional[Any] = Field(None, description="Multipart input reference file")
 
@@ -64,6 +67,7 @@ class VideoExtendDirectRequest(BaseModel):
     ratio: str = Field("2:3", description="Mapped to aspectRatio")
     length: int = Field(6, description="Mapped to videoLength")
     resolution: str = Field("480p", description="Mapped to resolutionName")
+    delivery_mode: Optional[str] = Field(None, description="Delivery mode: url/file")
 
 
 def _raise_validation_error(exc: ValidationError) -> None:
@@ -147,6 +151,22 @@ def _normalize_seconds(seconds: Optional[int]) -> int:
             message="seconds must be between 6 and 30",
             param="seconds",
             code="invalid_seconds",
+        )
+    return value
+
+
+def _normalize_delivery_mode(delivery_mode: Optional[str]) -> str:
+    value = delivery_mode or "url"
+    if delivery_mode is None:
+        value = str(
+            get_config("video.delivery_mode_default", "url") or "url"
+        ).strip()
+    value = str(value or "url").strip().lower()
+    if value not in {"url", "file"}:
+        raise ValidationException(
+            message="delivery_mode must be one of ['url', 'file']",
+            param="delivery_mode",
+            code="invalid_delivery_mode",
         )
     return value
 
@@ -255,6 +275,7 @@ async def _build_payload_and_references_for_form(
     size: Optional[str],
     seconds: Optional[int],
     quality: Optional[str],
+    delivery_mode: Optional[str],
     image_reference: Optional[str],
     input_reference: Optional[UploadFile],
 ) -> Tuple[BaseModel, List[str]]:
@@ -266,6 +287,7 @@ async def _build_payload_and_references_for_form(
                 "size": size,
                 "seconds": seconds,
                 "quality": quality,
+                "delivery_mode": delivery_mode,
                 "image_reference": image_reference,
                 "input_reference": None,
             }
@@ -299,6 +321,7 @@ def _multipart_create_schema(default_seconds: int) -> Dict[str, Any]:
             "size": {"type": "string", "default": "1792x1024"},
             "seconds": {"type": "integer", "default": default_seconds},
             "quality": {"type": "string", "default": "standard"},
+            "delivery_mode": {"type": "string", "default": "url"},
             "image_reference": {
                 "type": "string",
                 "description": "JSON string for image_reference object",
@@ -333,12 +356,66 @@ def _build_create_response(
     }
 
 
+def _extract_delivery_meta(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw = payload.pop("_video_delivery", None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _file_response_from_meta(meta: Dict[str, Any]) -> FileResponse:
+    local_path = str(meta.get("path") or "").strip()
+    if not local_path:
+        raise UpstreamException(
+            message="Video local persistence failed",
+            status_code=502,
+            code="video_local_persist_failed",
+        )
+
+    headers = {}
+    local_url = str(meta.get("url") or "").strip()
+    if local_url:
+        headers["X-Video-Local-Url"] = local_url
+    expires_at = meta.get("expires_at")
+    if expires_at is not None:
+        headers["X-Video-Expires-At"] = str(expires_at)
+
+    return FileResponse(
+        local_path,
+        media_type=str(meta.get("media_type") or "video/mp4"),
+        filename=local_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+        headers=headers,
+    )
+
+
+def _finalize_video_response(
+    payload: Dict[str, Any],
+    *,
+    delivery_mode: str,
+    fallback_url: str,
+) -> Response:
+    meta = _extract_delivery_meta(payload)
+    if delivery_mode == "file":
+        return _file_response_from_meta(meta)
+
+    if not meta:
+        payload["url"] = fallback_url
+        return JSONResponse(content=payload)
+
+    payload["url"] = str(meta.get("url") or fallback_url)
+    storage = str(meta.get("storage") or "").strip()
+    if storage:
+        payload["storage"] = storage
+        payload["expires_at"] = meta.get("expires_at")
+        if storage != "local":
+            logger.warning(f"Video API returned fallback URL with storage={storage}")
+    return JSONResponse(content=payload)
+
+
 async def _create_video_from_payload(
     payload: BaseModel,
     references: List[str],
     *,
     require_extension: bool = False,
-) -> JSONResponse:
+) -> Response:
     prompt = (payload.prompt or "").strip()
     if not prompt:
         raise ValidationException(
@@ -351,6 +428,7 @@ async def _create_video_from_payload(
     size, aspect_ratio = _normalize_size(payload.size)
     quality, resolution = _normalize_quality(payload.quality)
     seconds = _normalize_seconds(payload.seconds)
+    delivery_mode = _normalize_delivery_mode(getattr(payload, "delivery_mode", None))
     if require_extension and seconds <= 6:
         raise ValidationException(
             message="seconds must be between 7 and 30 for /video/extend",
@@ -371,27 +449,35 @@ async def _create_video_from_payload(
         video_length=seconds,
         resolution=resolution,
         preset="custom",
+        delivery_mode=delivery_mode,
     )
 
+    raw_video_url = ""
     choices = result.get("choices") if isinstance(result, dict) else None
     if not isinstance(choices, list) or not choices:
         raise UpstreamException("Video generation failed: empty result")
 
     msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
     rendered = msg.get("content", "") if isinstance(msg, dict) else ""
-    video_url = _extract_video_url(rendered)
-    if not video_url:
+    raw_video_url = _extract_video_url(rendered)
+    if not raw_video_url:
         raise UpstreamException("Video generation failed: missing video URL")
 
-    return JSONResponse(
-        content=_build_create_response(
-            model=model,
-            prompt=prompt,
-            size=size,
-            seconds=seconds,
-            quality=quality,
-            url=video_url,
-        )
+    response_payload = _build_create_response(
+        model=model,
+        prompt=prompt,
+        size=size,
+        seconds=seconds,
+        quality=quality,
+        url=raw_video_url,
+    )
+    if isinstance(result, dict) and isinstance(result.get("_video_delivery"), dict):
+        response_payload["_video_delivery"] = result.get("_video_delivery")
+
+    return _finalize_video_response(
+        response_payload,
+        delivery_mode=delivery_mode,
+        fallback_url=raw_video_url,
     )
 
 
@@ -450,6 +536,7 @@ async def create_video(request: Request):
         size=form.get("size"),
         seconds=form.get("seconds"),
         quality=form.get("quality"),
+        delivery_mode=form.get("delivery_mode"),
         image_reference=form.get("image_reference"),
         input_reference=form.get("input_reference"),
     )
@@ -473,6 +560,7 @@ async def extend_video(body: VideoExtendDirectRequest, request: Request):
         trace_id=getattr(request.state, "trace_id", ""),
         model=VIDEO_MODEL_ID,
     )
+    delivery_mode = _normalize_delivery_mode(body.delivery_mode)
     result = await VideoExtendService.extend(
         prompt=body.prompt,
         reference_id=body.reference_id,
@@ -480,8 +568,14 @@ async def extend_video(body: VideoExtendDirectRequest, request: Request):
         ratio=body.ratio,
         length=body.length,
         resolution=body.resolution,
+        delivery_mode=delivery_mode,
     )
-    return JSONResponse(content=result)
+    fallback_url = str(result.get("url") or "").strip()
+    return _finalize_video_response(
+        result,
+        delivery_mode=delivery_mode,
+        fallback_url=fallback_url,
+    )
 
 
 __all__ = ["router"]

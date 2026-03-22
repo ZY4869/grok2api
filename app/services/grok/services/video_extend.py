@@ -11,6 +11,7 @@ from app.core.exceptions import AppException, ErrorType, UpstreamException, Vali
 from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoCollectProcessor
+from app.services.grok.utils.video_assets import VideoAssetService
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.token import EffortType, get_token_manager
@@ -86,6 +87,7 @@ class VideoExtendService:
         ratio: str = "2:3",
         length: int = 6,
         resolution: str = "480p",
+        delivery_mode: str = "url",
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         if not prompt:
@@ -161,17 +163,16 @@ class VideoExtendService:
         }
 
         # Direct app-chat call for extension path (no auto step splitting).
-        session = ResettableSession()
-        response = await AppChatReverse.request(
-            session,
-            token,
-            message=f"{prompt} --mode=custom",
-            model="grok-3",
-            tool_overrides={"videoGen": True},
-            model_config_override=model_config_override,
-        )
-
-        result = await VideoCollectProcessor(VIDEO_MODEL_ID, token).process(response)
+        async with ResettableSession() as session:
+            response = await AppChatReverse.request(
+                session,
+                token,
+                message=f"{prompt} --mode=custom",
+                model="grok-3",
+                tool_overrides={"videoGen": True},
+                model_config_override=model_config_override,
+            )
+            result = await VideoCollectProcessor(VIDEO_MODEL_ID, token).process(response)
         choices = result.get("choices") if isinstance(result, dict) else None
         if not isinstance(choices, list) or not choices:
             raise UpstreamException("Video extension failed: empty result")
@@ -181,6 +182,8 @@ class VideoExtendService:
         video_url = _extract_video_url(rendered)
         if not video_url:
             raise UpstreamException("Video extension failed: missing video URL")
+
+        delivery = await VideoAssetService.prepare_delivery(video_url, token, delivery_mode)
 
         model_info = ModelService.get(VIDEO_MODEL_ID)
         effort = (
@@ -206,7 +209,8 @@ class VideoExtendService:
             "ratio": aspect_ratio,
             "length": video_length,
             "resolution": resolution_name,
-            "url": video_url,
+            "url": delivery.url or video_url,
+            "_video_delivery": delivery.to_dict(),
         }
 
 

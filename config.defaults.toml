@@ -146,6 +146,12 @@ response_format = "url"
 [video]
 # 是否开启生成结束后 Public 资产
 enable_public_asset = false
+# 是否将生成完成的视频持久化到 VPS 本地磁盘
+local_persist_enabled = false
+# 本地持久化视频保留天数，0 表示不自动按天清理
+local_retention_days = 7
+# 默认回传模式：url 返回下载地址，file 直接回传视频文件
+delivery_mode_default = "url"
 # Reverse 接口并发上限
 concurrent = 100
 # Reverse 接口超时时间（秒）

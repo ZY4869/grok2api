@@ -24,6 +24,7 @@ from app.core.exceptions import (
 from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.download import DownloadService
+from app.services.grok.utils.video_assets import VideoAssetService
 from app.services.grok.utils.process import _is_http2_error, _normalize_line, _with_idle_timeout
 from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.stream import wrap_stream_with_usage
@@ -611,6 +612,19 @@ def _resolve_upscale_timing() -> str:
     return "complete"
 
 
+async def _prepare_video_delivery(
+    video_url: str,
+    token: str,
+    delivery_mode: Optional[str],
+) -> tuple[str, dict[str, Any]]:
+    if not delivery_mode:
+        return video_url, {}
+
+    delivery = await VideoAssetService.prepare_delivery(video_url, token, delivery_mode)
+    payload = delivery.to_dict()
+    return payload.get("url") or video_url, payload
+
+
 class _VideoChainSSEWriter:
     def __init__(self, model: str, show_think: bool):
         self.model = model
@@ -797,6 +811,7 @@ class VideoService:
         video_length: int = 6,
         resolution: str = "480p",
         preset: str = "normal",
+        delivery_mode: Optional[str] = None,
     ):
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
@@ -1066,17 +1081,23 @@ class VideoService:
             if _public_asset_enabled():
                 final_video_url = await _create_public_video_link(token, final_video_url)
 
+            delivery_target_url, delivery_meta = await _prepare_video_delivery(
+                final_video_url,
+                token,
+                delivery_mode,
+            )
+
             dl_service = DownloadService()
             try:
                 content = await dl_service.render_video(
-                    final_video_url,
+                    delivery_target_url,
                     token,
                     final_result.thumbnail_url,
                 )
             finally:
                 await dl_service.close()
 
-            return {
+            result = {
                 "id": final_result.response_id,
                 "object": "chat.completion",
                 "created": int(time.time()),
@@ -1094,6 +1115,9 @@ class VideoService:
                 ],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             }
+            if delivery_meta:
+                result["_video_delivery"] = delivery_meta
+            return result
 
         if is_stream:
             return wrap_stream_with_usage(_stream_chain(), token_mgr, token, model)

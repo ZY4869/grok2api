@@ -40,6 +40,7 @@ from app.api.v1.models import router as models_router  # noqa: E402
 from app.api.v1.response import router as responses_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
 from app.services.token.scheduler import get_account_scheduler  # noqa: E402
+from app.services.grok.utils.video_asset_scheduler import get_video_asset_scheduler  # noqa: E402
 from app.api.v1.admin import router as admin_router
 from app.api.v1.function import router as function_router
 from app.api.pages import router as pages_router
@@ -97,6 +98,8 @@ async def lifespan(app: FastAPI):
     # 6. 启动账号可用性定时检测
     account_scheduler = get_account_scheduler()
     account_scheduler.start()
+    video_asset_scheduler = get_video_asset_scheduler()
+    video_asset_scheduler.start()
 
     logger.info("Application startup complete.")
     yield
@@ -105,6 +108,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Grok2API...")
 
     account_scheduler.stop()
+    video_asset_scheduler.stop()
 
     from app.services.cf_refresh import stop as cf_refresh_stop
     cf_refresh_stop()
