@@ -212,17 +212,44 @@ class RealQuotaRefreshService:
         raw_token = token[4:] if token.startswith("sso=") else token
 
         try:
+            partial_errors = []
+            subscription_payload: Any = {}
+            rate_limits: dict[str, Any] = {}
+            success_models = 0
+
             async with _get_real_quota_semaphore():
                 async with ResettableSession() as session:
-                    await RefreshXSubscriptionStatusReverse.request(session, raw_token)
-                    subscriptions_response = await SubscriptionsReverse.request(
-                        session, raw_token
-                    )
-                    subscription_payload = _safe_json(subscriptions_response)
+                    # This endpoint appears to be optional in practice. Some accounts
+                    # return 501, but subscriptions/rate-limits can still be queried.
+                    try:
+                        await RefreshXSubscriptionStatusReverse.request(
+                            session, raw_token
+                        )
+                    except Exception as exc:
+                        error_text = str(exc)
+                        partial_errors.append(
+                            f"refresh-subscription: {error_text}"
+                        )
+                        logger.warning(
+                            "Real quota refresh: token={} refresh-x-subscription-status failed: {}",
+                            f"{raw_token[:10]}...",
+                            error_text,
+                        )
 
-                    partial_errors = []
-                    rate_limits: dict[str, Any] = {}
-                    success_models = 0
+                    try:
+                        subscriptions_response = await SubscriptionsReverse.request(
+                            session, raw_token
+                        )
+                        subscription_payload = _safe_json(subscriptions_response)
+                    except Exception as exc:
+                        error_text = str(exc)
+                        partial_errors.append(f"subscriptions: {error_text}")
+                        logger.warning(
+                            "Real quota refresh: token={} subscriptions failed: {}",
+                            f"{raw_token[:10]}...",
+                            error_text,
+                        )
+
                     for model_name in REAL_QUOTA_MODELS:
                         try:
                             response = await RateLimitsReverse.request(
@@ -239,7 +266,10 @@ class RealQuotaRefreshService:
                             rate_limits[model_name] = {"error": error_text}
                             partial_errors.append(f"{model_name}: {error_text}")
                             logger.warning(
-                                f"Real quota refresh: model={model_name} token={raw_token[:10]}... failed: {error_text}"
+                                "Real quota refresh: model={} token={} failed: {}",
+                                model_name,
+                                f"{raw_token[:10]}...",
+                                error_text,
                             )
 
             subscriptions = [
@@ -266,8 +296,6 @@ class RealQuotaRefreshService:
             error_text = ""
             if success_models == 0:
                 error_text = "No live model quota returned"
-            elif partial_errors:
-                error_text = "; ".join(partial_errors)
 
             _apply_snapshot(mgr, raw_token, snapshot, error_text)
             return snapshot

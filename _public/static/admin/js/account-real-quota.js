@@ -120,16 +120,19 @@
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
     const hasData = Boolean(quota || item.real_tier || item.real_tier_name);
     const tier = item.real_tier || (quota && quota.subscription_tier) || "";
-    const partialErrors =
-      quota && Array.isArray(quota.partial_errors) ? quota.partial_errors : [];
-    const backendError = item.last_real_quota_error || "";
-    const error = backendError || partialErrors.join("；");
-
     const rateLimits =
       quota && quota.rate_limits && typeof quota.rate_limits === "object"
         ? quota.rate_limits
         : {};
     const modelNames = Object.keys(rateLimits);
+    const hasLiveQuota = modelNames.some((modelName) => {
+      const payload = rateLimits[modelName];
+      return payload && typeof payload === "object" && !payload.error;
+    });
+    const partialErrors =
+      quota && Array.isArray(quota.partial_errors) ? quota.partial_errors : [];
+    const backendError = item.last_real_quota_error || "";
+    const error = backendError || (!hasLiveQuota ? partialErrors.join("；") : "");
     const summary = modelNames.length
       ? modelNames
           .map((modelName) => formatRateLimitSummary(modelName, rateLimits[modelName]))
