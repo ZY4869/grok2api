@@ -1,10 +1,4 @@
 (function (global) {
-  const DISPLAY_MODES = {
-    MODEL: "model",
-    SHORTCUT: "shortcut",
-  };
-  const DEFAULT_DISPLAY_MODE = DISPLAY_MODES.MODEL;
-
   const TIER_LABELS = {
     SUBSCRIPTION_TIER_INVALID: "Free",
     SUBSCRIPTION_TIER_X_BASIC: "Basic",
@@ -14,60 +8,26 @@
     SUBSCRIPTION_TIER_SUPER_GROK_PRO: "SuperGrokPro",
   };
 
-  const ITEM_GROUPS = {
-    [DISPLAY_MODES.MODEL]: [
-      [
-        { modelName: "grok-3", markerText: "3", tooltipLabel: "3额度", tone: "text-3" },
-        { modelName: "grok-4", markerText: "4", tooltipLabel: "4额度", tone: "text-4" },
-      ],
-      [
-        {
-          modelName: "grok-imagine-1.0",
-          tooltipLabel: "图片额度",
-          tone: "image",
-          symbol: "image",
-        },
-        {
-          modelName: "grok-imagine-1.0-video",
-          tooltipLabel: "视频额度",
-          tone: "video",
-          symbol: "video",
-        },
-      ],
+  const ITEM_ROWS = [
+    [
+      { modelName: "grok-3", markerText: "3", tooltipLabel: "3额度", tone: "text-3" },
+      { modelName: "grok-4", markerText: "4", tooltipLabel: "4额度", tone: "text-4" },
     ],
-    [DISPLAY_MODES.SHORTCUT]: [
-      [
-        {
-          modelName: "grok-3",
-          markerText: "3",
-          tooltipLabel: "3 Fast额度",
-          tone: "text-3",
-        },
-        {
-          modelName: "grok-4",
-          markerText: "4",
-          tooltipLabel: "4 Expert/Heavy额度",
-          tone: "text-4",
-        },
-      ],
-      [
-        {
-          modelName: "grok-imagine-1.0",
-          tooltipLabel: "图片额度",
-          tone: "image",
-          symbol: "image",
-        },
-        {
-          modelName: "grok-imagine-1.0-video",
-          tooltipLabel: "视频额度",
-          tone: "video",
-          symbol: "video",
-        },
-      ],
+    [
+      {
+        modelName: "grok-imagine-1.0",
+        tooltipLabel: "图片额度",
+        tone: "image",
+        symbol: "image",
+      },
+      {
+        modelName: "grok-imagine-1.0-video",
+        tooltipLabel: "视频额度",
+        tone: "video",
+        symbol: "video",
+      },
     ],
-  };
-
-  const SHORTCUT_MODE_HINT = "快捷模式最终消耗对应底层模型额度，Auto 会在 3 Fast / 4 Expert 间分配。";
+  ];
 
   const SUPER_TIERS = new Set([
     "SUBSCRIPTION_TIER_GROK_PRO",
@@ -78,10 +38,6 @@
     "SUBSCRIPTION_TIER_X_PREMIUM",
     "SUBSCRIPTION_TIER_X_PREMIUM_PLUS",
   ]);
-
-  function normalizeDisplayMode(mode) {
-    return mode === DISPLAY_MODES.SHORTCUT ? DISPLAY_MODES.SHORTCUT : DEFAULT_DISPLAY_MODE;
-  }
 
   function formatTimestamp(timestamp) {
     if (!timestamp) return "";
@@ -116,10 +72,16 @@
 
   function describeRateLimit(limit) {
     if (!limit || typeof limit !== "object") {
-      return { value: "-", detail: "", status: "empty" };
+      return { value: "-", detail: "", status: "empty", rawError: "", sourceModelName: "" };
     }
     if (limit.error) {
-      return { value: "刷新失败", detail: "", status: "error" };
+      return {
+        value: "刷新失败",
+        detail: "",
+        status: "error",
+        rawError: String(limit.error),
+        sourceModelName: String(limit.sourceModelName || ""),
+      };
     }
 
     const remaining = toFiniteNumber(limit.remainingTokens ?? limit.remainingQueries);
@@ -127,20 +89,44 @@
     const waitTimeSeconds = toFiniteNumber(limit.waitTimeSeconds);
 
     if (remaining !== null && total !== null) {
-      return { value: `${remaining}/${total}`, detail: "", status: "ready" };
+      return {
+        value: `${remaining}/${total}`,
+        detail: "",
+        status: "ready",
+        rawError: "",
+        sourceModelName: String(limit.sourceModelName || ""),
+      };
     }
     if (remaining !== null) {
-      return { value: `${remaining}`, detail: "", status: "ready" };
+      return {
+        value: `${remaining}`,
+        detail: "",
+        status: "ready",
+        rawError: "",
+        sourceModelName: String(limit.sourceModelName || ""),
+      };
     }
     if (waitTimeSeconds !== null && waitTimeSeconds > 0) {
-      return { value: `${waitTimeSeconds}s`, detail: "后恢复", status: "wait" };
+      return {
+        value: `${waitTimeSeconds}s`,
+        detail: "后恢复",
+        status: "wait",
+        rawError: "",
+        sourceModelName: String(limit.sourceModelName || ""),
+      };
     }
-    return { value: "-", detail: "", status: "empty" };
+
+    return {
+      value: "-",
+      detail: "",
+      status: "empty",
+      rawError: "",
+      sourceModelName: String(limit.sourceModelName || ""),
+    };
   }
 
-  function buildRows(displayMode, rateLimits) {
-    const groups = ITEM_GROUPS[normalizeDisplayMode(displayMode)] || ITEM_GROUPS[DEFAULT_DISPLAY_MODE];
-    return groups.map((row) =>
+  function buildRows(rateLimits) {
+    return ITEM_ROWS.map((row) =>
       row.map((config) => {
         const valueState = describeRateLimit(rateLimits[config.modelName]);
         return {
@@ -153,17 +139,25 @@
           value: valueState.value,
           detail: valueState.detail,
           status: valueState.status,
+          rawError: valueState.rawError,
+          sourceModelName: valueState.sourceModelName,
         };
       })
     );
   }
 
-  function formatCardTitle(card) {
-    const suffix = card.detail ? ` ${card.detail}` : "";
-    return `${card.tooltipLabel}: ${card.value}${suffix}`;
+  function formatItemTitle(item) {
+    const parts = [`${item.tooltipLabel}: ${item.value}${item.detail ? ` ${item.detail}` : ""}`];
+    if (item.sourceModelName && item.sourceModelName !== item.modelName) {
+      parts.push(`来源 ${item.sourceModelName}`);
+    }
+    if (item.rawError) {
+      parts.push(`错误 ${item.rawError}`);
+    }
+    return parts.join(" | ");
   }
 
-  function buildTitle(item, label, error, displayMode) {
+  function buildTitle(item, label, error) {
     const quota =
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
     const lines = [];
@@ -194,13 +188,11 @@
       quota && quota.rate_limits && typeof quota.rate_limits === "object"
         ? quota.rate_limits
         : {};
-    buildRows(displayMode, rateLimits).flat().forEach((card) => {
-      lines.push(formatCardTitle(card));
-    });
-
-    if (normalizeDisplayMode(displayMode) === DISPLAY_MODES.SHORTCUT) {
-      lines.push(`提示: ${SHORTCUT_MODE_HINT}`);
-    }
+    buildRows(rateLimits)
+      .flat()
+      .forEach((quotaItem) => {
+        lines.push(formatItemTitle(quotaItem));
+      });
 
     if (error) {
       lines.push(`错误: ${error}`);
@@ -213,10 +205,9 @@
     return lines.join("\n");
   }
 
-  function getRealQuotaState(item, options = {}) {
+  function getRealQuotaState(item) {
     const quota =
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
-    const displayMode = normalizeDisplayMode(options.displayMode);
     const hasData = Boolean(quota || item.real_tier || item.real_tier_name);
     const tier = item.real_tier || (quota && quota.subscription_tier) || "";
     const rateLimits =
@@ -244,29 +235,22 @@
         : "未查询";
 
     return {
-      displayMode,
       label,
       badgeClass: getBadgeClass(tier, Boolean(error), hasData),
-      rows: buildRows(displayMode, rateLimits),
+      rows: buildRows(rateLimits),
       note,
-      modeHint: displayMode === DISPLAY_MODES.SHORTCUT && (hasData || modelNames.length > 0)
-        ? SHORTCUT_MODE_HINT
-        : "",
       meta: item.last_real_quota_check_at
         ? `更新 ${formatTimestamp(item.last_real_quota_check_at)}`
         : "",
       error,
-      title: buildTitle(item, label, error, displayMode),
+      title: buildTitle(item, label, error),
     };
   }
 
   const api = {
-    DEFAULT_DISPLAY_MODE,
-    DISPLAY_MODES,
     formatTimestamp,
     getRealQuotaState,
     getTierLabel,
-    normalizeDisplayMode,
   };
 
   global.AccountRealQuota = api;

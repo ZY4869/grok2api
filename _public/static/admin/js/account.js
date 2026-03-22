@@ -259,16 +259,15 @@ function getRealQuotaCardIconSvg(symbol) {
 }
 
 function buildFallbackRealQuotaState() {
-  const isShortcut = realQuotaDisplayMode === REAL_QUOTA_DISPLAY_MODES.SHORTCUT;
   return {
-    displayMode: realQuotaDisplayMode,
+    displayMode: REAL_QUOTA_DISPLAY_MODES.MODEL,
     label: "未查询",
     badgeClass: "badge-gray",
     rows: [
       [
         {
           markerText: "3",
-          tooltipLabel: isShortcut ? "3 Fast额度" : "3额度",
+          tooltipLabel: "3额度",
           tone: "text-3",
           value: "-",
           detail: "",
@@ -277,7 +276,7 @@ function buildFallbackRealQuotaState() {
         },
         {
           markerText: "4",
-          tooltipLabel: isShortcut ? "4 Expert/Heavy额度" : "4额度",
+          tooltipLabel: "4额度",
           tone: "text-4",
           value: "-",
           detail: "",
@@ -305,7 +304,6 @@ function buildFallbackRealQuotaState() {
       ],
     ],
     note: "点击刷新真实额度",
-    modeHint: isShortcut ? "快捷模式最终消耗对应底层模型额度，Auto 会在 3 Fast / 4 Expert 间分配。" : "",
     meta: "",
     error: "",
     title: "",
@@ -314,8 +312,18 @@ function buildFallbackRealQuotaState() {
 
 function createRealQuotaItem(card) {
   const itemNode = document.createElement("div");
-  itemNode.className = "real-quota-item";
-  itemNode.title = `${card.tooltipLabel || card.markerText || ""}: ${card.value}${card.detail ? ` ${card.detail}` : ""}`;
+  itemNode.className = `real-quota-item real-quota-item--${card.tone || "neutral"}`;
+
+  const titleParts = [
+    `${card.tooltipLabel || card.markerText || ""}: ${card.value}${card.detail ? ` ${card.detail}` : ""}`,
+  ];
+  if (card.sourceModelName && card.sourceModelName !== card.modelName) {
+    titleParts.push(`来源 ${card.sourceModelName}`);
+  }
+  if (card.rawError) {
+    titleParts.push(`错误 ${card.rawError}`);
+  }
+  itemNode.title = titleParts.join(" | ");
 
   if (card.symbol) {
     const symbol = document.createElement("span");
@@ -351,7 +359,7 @@ function createRealQuotaCell(item) {
 
   const helper = getRealQuotaHelper();
   const state = helper
-    ? helper.getRealQuotaState(item, { displayMode: realQuotaDisplayMode })
+    ? helper.getRealQuotaState(item)
     : buildFallbackRealQuotaState();
 
   const wrapper = document.createElement("div");
@@ -567,14 +575,13 @@ function renderTable() {
 
   tbody.replaceChildren(fragment);
   updateSelectAllState();
-  syncRealQuotaDisplayModeToggle();
 }
 
 async function init() {
   apiKey = await ensureAdminKey();
   if (apiKey === null) return;
 
-  initRealQuotaDisplayModeToggle();
+  realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
   ensureImportController();
   await loadAccountData();
 }

@@ -12,7 +12,7 @@ const realQuota = require(path.join(
   "account-real-quota.js"
 ));
 
-test("getRealQuotaState renders two model rows in default view", () => {
+test("getRealQuotaState renders two rows in model view", () => {
   const state = realQuota.getRealQuotaState({
     real_tier: "SUBSCRIPTION_TIER_GROK_PRO",
     real_quota: {
@@ -33,9 +33,8 @@ test("getRealQuotaState renders two model rows in default view", () => {
     },
     last_real_quota_check_at: 1711111111111,
     last_real_quota_error: "",
-  }, { displayMode: "model" });
+  });
 
-  assert.equal(state.displayMode, "model");
   assert.equal(state.label, "SuperGrok");
   assert.equal(state.badgeClass, "badge-purple");
   assert.equal(state.rows.length, 2);
@@ -51,7 +50,7 @@ test("getRealQuotaState renders two model rows in default view", () => {
   assert.equal(state.rows[1][1].symbol, "video");
   assert.equal(state.rows[1][1].tooltipLabel, "视频额度");
   assert.equal(state.rows[1][1].value, "2/5");
-  assert.equal(state.modeHint, "");
+  assert.equal(state.note, "");
   assert.match(state.title, /真实档位: SuperGrok/);
   assert.match(state.title, /3额度: 120\/1000/);
   assert.match(state.title, /视频额度: 2\/5/);
@@ -64,7 +63,7 @@ test("getRealQuotaState surfaces refresh failure without prior data", () => {
     real_quota: null,
     last_real_quota_check_at: 0,
     last_real_quota_error: "No live model quota returned",
-  }, { displayMode: "model" });
+  });
 
   assert.equal(state.label, "刷新失败");
   assert.equal(state.badgeClass, "badge-red");
@@ -74,7 +73,7 @@ test("getRealQuotaState surfaces refresh failure without prior data", () => {
   assert.match(state.title, /错误:/);
 });
 
-test("getRealQuotaState supports shortcut mode and wait state", () => {
+test("getRealQuotaState keeps wait state and raw media errors readable", () => {
   const state = realQuota.getRealQuotaState({
     real_tier: "SUBSCRIPTION_TIER_GROK_PRO",
     real_quota: {
@@ -82,30 +81,30 @@ test("getRealQuotaState supports shortcut mode and wait state", () => {
       rate_limits: {
         "grok-3": { remainingTokens: 88, totalTokens: 1000 },
         "grok-4": { waitTimeSeconds: 45 },
-        "grok-imagine-1.0": { remainingQueries: 3, totalQueries: 12 },
+        "grok-imagine-1.0": {
+          remainingQueries: 3,
+          totalQueries: 12,
+          sourceModelName: "grok-imagine-1.0-fast",
+        },
+        "grok-imagine-1.0-video": {
+          error: "RateLimitsReverse: Request failed, 404",
+        },
       },
     },
     last_real_quota_check_at: 1711111111111,
     last_real_quota_error: "",
-  }, { displayMode: "shortcut" });
+  });
 
-  assert.equal(state.displayMode, "shortcut");
   assert.equal(state.label, "SuperGrok");
-  assert.equal(state.rows[0][0].markerText, "3");
-  assert.equal(state.rows[0][0].tooltipLabel, "3 Fast额度");
-  assert.equal(state.rows[0][0].value, "88/1000");
-  assert.equal(state.rows[0][1].markerText, "4");
-  assert.equal(state.rows[0][1].tooltipLabel, "4 Expert/Heavy额度");
   assert.equal(state.rows[0][1].value, "45s");
   assert.equal(state.rows[0][1].detail, "后恢复");
   assert.equal(state.rows[0][1].status, "wait");
-  assert.equal(state.rows[1][0].symbol, "image");
   assert.equal(state.rows[1][0].value, "3/12");
-  assert.equal(state.rows[1][1].symbol, "video");
-  assert.equal(state.rows[1][1].value, "-");
-  assert.match(state.title, /提示: 快捷模式最终消耗对应底层模型额度/);
-  assert.match(state.title, /3 Fast额度: 88\/1000/);
-  assert.match(state.title, /4 Expert\/Heavy额度: 45s 后恢复/);
+  assert.equal(state.rows[1][0].sourceModelName, "grok-imagine-1.0-fast");
+  assert.equal(state.rows[1][1].value, "刷新失败");
+  assert.equal(state.rows[1][1].rawError, "RateLimitsReverse: Request failed, 404");
+  assert.match(state.title, /来源 grok-imagine-1.0-fast/);
+  assert.match(state.title, /错误 RateLimitsReverse: Request failed, 404/);
 });
 
 test("getRealQuotaState hides partial refresh warnings when live quota exists", () => {
@@ -120,7 +119,7 @@ test("getRealQuotaState hides partial refresh warnings when live quota exists", 
     },
     last_real_quota_check_at: 1711111111111,
     last_real_quota_error: "",
-  }, { displayMode: "model" });
+  });
 
   assert.equal(state.label, "SuperGrok");
   assert.equal(state.error, "");

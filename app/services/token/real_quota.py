@@ -18,12 +18,35 @@ from app.services.reverse.refresh_x_subscription_status import (
 from app.services.reverse.subscriptions import SubscriptionsReverse
 from app.services.reverse.utils.session import ResettableSession
 
-REAL_QUOTA_MODELS = (
-    "grok-3",
-    "grok-4",
-    "grok-imagine-1.0",
-    "grok-imagine-1.0-video",
+REAL_QUOTA_TARGETS = (
+    {
+        "slot": "grok-3",
+        "queries": (
+            {"model_name": "grok-3"},
+        ),
+    },
+    {
+        "slot": "grok-4",
+        "queries": (
+            {"model_name": "grok-4"},
+        ),
+    },
+    {
+        "slot": "grok-imagine-1.0",
+        "queries": (
+            {"model_name": "grok-imagine-1.0"},
+            {"model_name": "grok-imagine-1.0-fast"},
+            {"model_name": "grok-imagine-1.0-edit"},
+        ),
+    },
+    {
+        "slot": "grok-imagine-1.0-video",
+        "queries": (
+            {"model_name": "grok-imagine-1.0-video"},
+        ),
+    },
 )
+REAL_QUOTA_MODELS = tuple(target["slot"] for target in REAL_QUOTA_TARGETS)
 REAL_QUOTA_MODEL_LABELS = {
     "grok-3": "text (grok-3)",
     "grok-4": "text (grok-4)",
@@ -154,6 +177,87 @@ def _normalize_rate_limit(payload: Any) -> dict[str, Any]:
     return normalized
 
 
+def _has_rate_limit_data(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    for key in (
+        "waitTimeSeconds",
+        "totalQueries",
+        "remainingQueries",
+        "totalTokens",
+        "remainingTokens",
+    ):
+        if payload.get(key) is not None:
+            return True
+
+    return any(
+        _has_rate_limit_data(payload.get(key))
+        for key in ("lowEffortRateLimits", "highEffortRateLimits")
+        if isinstance(payload.get(key), dict)
+    )
+
+
+def _rate_limit_query_label(query: dict[str, Any]) -> str:
+    model_name = str(query.get("model_name") or "")
+    request_kind = str(query.get("request_kind") or "DEFAULT")
+    if request_kind and request_kind != "DEFAULT":
+        return f"{model_name}[{request_kind}]"
+    return model_name
+
+
+async def _fetch_rate_limit_for_target(
+    session: Any,
+    token: str,
+    target: dict[str, Any],
+) -> tuple[dict[str, Any], bool, str]:
+    slot = str(target.get("slot") or "")
+    queries = target.get("queries") or ()
+    candidate_errors: list[str] = []
+
+    for query in queries:
+        model_name = str(query.get("model_name") or "")
+        request_kind = str(query.get("request_kind") or "DEFAULT")
+        query_label = _rate_limit_query_label(query)
+
+        try:
+            response = await RateLimitsReverse.request(
+                session,
+                token,
+                model_name=model_name,
+                request_kind=request_kind,
+            )
+            normalized = _normalize_rate_limit(_safe_json(response))
+            if not _has_rate_limit_data(normalized):
+                candidate_errors.append(f"{query_label}: no quota data returned")
+                logger.warning(
+                    "Real quota refresh: slot={} query={} token={} returned no quota data",
+                    slot,
+                    query_label,
+                    f"{token[:10]}...",
+                )
+                continue
+
+            if model_name != slot:
+                normalized["sourceModelName"] = model_name
+            if request_kind != "DEFAULT":
+                normalized["sourceRequestKind"] = request_kind
+            return normalized, True, ""
+        except Exception as exc:
+            error_text = str(exc)
+            candidate_errors.append(f"{query_label}: {error_text}")
+            logger.warning(
+                "Real quota refresh: slot={} query={} token={} failed: {}",
+                slot,
+                query_label,
+                f"{token[:10]}...",
+                error_text,
+            )
+
+    error_text = "; ".join(candidate_errors) if candidate_errors else "No quota data returned"
+    return {"error": error_text}, False, f"{slot}: {error_text}"
+
+
 def _describe_rate_limit(model_name: str, payload: dict[str, Any]) -> str:
     display_name = REAL_QUOTA_MODEL_LABELS.get(model_name, model_name)
     if not isinstance(payload, dict):
@@ -262,27 +366,18 @@ class RealQuotaRefreshService:
                             error_text,
                         )
 
-                    for model_name in REAL_QUOTA_MODELS:
-                        try:
-                            response = await RateLimitsReverse.request(
-                                session,
-                                raw_token,
-                                model_name=model_name,
-                            )
-                            rate_limits[model_name] = _normalize_rate_limit(
-                                _safe_json(response)
-                            )
+                    for target in REAL_QUOTA_TARGETS:
+                        slot = str(target.get("slot") or "")
+                        payload, ok, partial_error = await _fetch_rate_limit_for_target(
+                            session,
+                            raw_token,
+                            target,
+                        )
+                        rate_limits[slot] = payload
+                        if ok:
                             success_models += 1
-                        except Exception as exc:
-                            error_text = str(exc)
-                            rate_limits[model_name] = {"error": error_text}
-                            partial_errors.append(f"{model_name}: {error_text}")
-                            logger.warning(
-                                "Real quota refresh: model={} token={} failed: {}",
-                                model_name,
-                                f"{raw_token[:10]}...",
-                                error_text,
-                            )
+                        elif partial_error:
+                            partial_errors.append(partial_error)
 
             subscriptions = [
                 _normalize_subscription(item)
