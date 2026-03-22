@@ -168,7 +168,7 @@
 }
 
 .account-col-real-quota {
-  width: 338px;
+  width: 296px;
 }
 
 .account-col-last-check {
@@ -191,7 +191,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 6px;
 }
 
 .real-quota-header-title {
@@ -204,20 +204,21 @@
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 2px;
+  padding: 1px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: #f8fafc;
 }
 
 .real-quota-display-btn {
-  height: 24px;
-  padding: 0 10px;
+  height: 22px;
+  min-width: 28px;
+  padding: 0 8px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--accents-4);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
   transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
@@ -236,142 +237,135 @@
 .real-quota-wrap {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   max-width: 100%;
 }
 
 .real-quota-main {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
 }
 
 .real-quota-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--accents-4);
+  font-variant-numeric: tabular-nums;
 }
 
-.real-quota-grid {
+.real-quota-lines {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
-.real-quota-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.real-quota-card {
-  min-width: 0;
-  min-height: 72px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  padding: 9px 10px;
-}
-
-.real-quota-card-header {
+.real-quota-line {
   display: flex;
   align-items: center;
-  min-height: 18px;
-  margin-bottom: 6px;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
-.real-quota-card-label {
+.real-quota-item {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+}
+
+.real-quota-item-sep {
+  font-size: 11px;
+  line-height: 1;
+  color: #cbd5e1;
+}
+
+.real-quota-marker {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  line-height: 1;
+  color: #475569;
 }
 
-.real-quota-card-symbol {
-  width: 18px;
-  height: 18px;
+.real-quota-symbol {
+  width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.real-quota-card-symbol svg {
-  width: 18px;
-  height: 18px;
-}
-
-.real-quota-card-value {
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.15;
-  color: #0f172a;
-  word-break: break-word;
-}
-
-.real-quota-card-detail {
-  margin-top: 3px;
-  font-size: 10px;
-  line-height: 1.35;
   color: #64748b;
+  flex: 0 0 auto;
 }
 
-.real-quota-card--text-3 {
+.real-quota-symbol svg {
+  width: 14px;
+  height: 14px;
+}
+
+.real-quota-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #0f172a;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.real-quota-detail {
+  font-size: 10px;
+  line-height: 1;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.real-quota-pill--text-3 {
   background: #eef4ff;
-  border-color: #d8e5ff;
+  border-color: #d6e4fb;
   color: #34557a;
 }
 
-.real-quota-card--text-4 {
-  background: #fff4e8;
-  border-color: #ffe0be;
+.real-quota-pill--text-4 {
+  background: #fff3e5;
+  border-color: #ffdcb6;
   color: #8b4d12;
 }
 
-.real-quota-card--image {
-  background: #eafaf5;
-  border-color: #c7f0e1;
+.real-quota-pill--image {
+  background: #eaf8f4;
+  border-color: #c9ece0;
   color: #146c58;
 }
 
-.real-quota-card--video {
+.real-quota-pill--video {
   background: #fff0f7;
-  border-color: #ffd0e3;
+  border-color: #f8cee1;
   color: #9d2f68;
 }
 
-.real-quota-card--text-3 .real-quota-card-label,
-.real-quota-card--text-4 .real-quota-card-label,
-.real-quota-card--image .real-quota-card-label,
-.real-quota-card--video .real-quota-card-label,
-.real-quota-card--text-3 .real-quota-card-symbol,
-.real-quota-card--text-4 .real-quota-card-symbol,
-.real-quota-card--image .real-quota-card-symbol,
-.real-quota-card--video .real-quota-card-symbol {
-  color: inherit;
-}
-
-.real-quota-card--state-empty .real-quota-card-value {
+.real-quota-pill--state-empty {
   color: #64748b;
 }
 
-.real-quota-card--state-wait .real-quota-card-value {
-  font-size: 15px;
+.real-quota-pill--state-wait {
+  letter-spacing: -0.01em;
 }
 
-.real-quota-card--state-error {
+.real-quota-pill--state-error {
   background: #fef2f2;
   border-color: #fecaca;
   color: #b91c1c;
 }
 
-.real-quota-card--state-error .real-quota-card-value {
-  font-size: 14px;
-  color: #b91c1c;
-}
-
-.real-quota-note,
-.real-quota-mode-hint {
+.real-quota-note {
   font-size: 10px;
   line-height: 1.45;
   color: var(--accents-4);
@@ -380,7 +374,7 @@
 }
 
 .real-quota-error {
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.45;
   color: #b91c1c;
   overflow-wrap: anywhere;
@@ -424,7 +418,7 @@
   }
 
   .account-col-real-quota {
-    width: 320px;
+    width: 284px;
   }
 
   .account-col-actions {
@@ -434,15 +428,7 @@
 
 @media (max-width: 1120px) {
   .account-col-real-quota {
-    width: 304px;
-  }
-
-  .real-quota-card {
-    padding: 8px 9px;
-  }
-
-  .real-quota-card-value {
-    font-size: 15px;
+    width: 268px;
   }
 }
 
@@ -460,7 +446,8 @@
   }
 
   .real-quota-display-btn {
-    padding: 0 8px;
+    min-width: 26px;
+    padding: 0 7px;
     font-size: 10px;
   }
 }

@@ -39,13 +39,17 @@ test("getRealQuotaState renders two model rows in default view", () => {
   assert.equal(state.label, "SuperGrok");
   assert.equal(state.badgeClass, "badge-purple");
   assert.equal(state.rows.length, 2);
-  assert.equal(state.rows[0][0].label, "3额度");
+  assert.equal(state.rows[0][0].markerText, "3");
+  assert.equal(state.rows[0][0].tooltipLabel, "3额度");
   assert.equal(state.rows[0][0].value, "120/1000");
-  assert.equal(state.rows[0][1].label, "4额度");
+  assert.equal(state.rows[0][1].markerText, "4");
+  assert.equal(state.rows[0][1].tooltipLabel, "4额度");
   assert.equal(state.rows[0][1].value, "6/10");
   assert.equal(state.rows[1][0].symbol, "image");
+  assert.equal(state.rows[1][0].tooltipLabel, "图片额度");
   assert.equal(state.rows[1][0].value, "4/12");
   assert.equal(state.rows[1][1].symbol, "video");
+  assert.equal(state.rows[1][1].tooltipLabel, "视频额度");
   assert.equal(state.rows[1][1].value, "2/5");
   assert.equal(state.modeHint, "");
   assert.match(state.title, /真实档位: SuperGrok/);
@@ -87,16 +91,21 @@ test("getRealQuotaState supports shortcut mode and wait state", () => {
 
   assert.equal(state.displayMode, "shortcut");
   assert.equal(state.label, "SuperGrok");
-  assert.equal(state.rows[0][0].label, "3 Fast额度");
+  assert.equal(state.rows[0][0].markerText, "3");
+  assert.equal(state.rows[0][0].tooltipLabel, "3 Fast额度");
   assert.equal(state.rows[0][0].value, "88/1000");
-  assert.equal(state.rows[0][1].label, "4 Expert/Heavy额度");
+  assert.equal(state.rows[0][1].markerText, "4");
+  assert.equal(state.rows[0][1].tooltipLabel, "4 Expert/Heavy额度");
   assert.equal(state.rows[0][1].value, "45s");
   assert.equal(state.rows[0][1].detail, "后恢复");
   assert.equal(state.rows[0][1].status, "wait");
   assert.equal(state.rows[1][0].symbol, "image");
   assert.equal(state.rows[1][0].value, "3/12");
-  assert.match(state.modeHint, /快捷模式最终消耗对应底层模型额度/);
+  assert.equal(state.rows[1][1].symbol, "video");
+  assert.equal(state.rows[1][1].value, "-");
+  assert.match(state.title, /提示: 快捷模式最终消耗对应底层模型额度/);
   assert.match(state.title, /3 Fast额度: 88\/1000/);
+  assert.match(state.title, /4 Expert\/Heavy额度: 45s 后恢复/);
 });
 
 test("getRealQuotaState hides partial refresh warnings when live quota exists", () => {

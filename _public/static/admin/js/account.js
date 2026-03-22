@@ -267,7 +267,7 @@ function buildFallbackRealQuotaState() {
     rows: [
       [
         {
-          label: isShortcut ? "3 Fast额度" : "3额度",
+          markerText: "3",
           tooltipLabel: isShortcut ? "3 Fast额度" : "3额度",
           tone: "text-3",
           value: "-",
@@ -276,7 +276,7 @@ function buildFallbackRealQuotaState() {
           symbol: "",
         },
         {
-          label: isShortcut ? "4 Expert/Heavy额度" : "4额度",
+          markerText: "4",
           tooltipLabel: isShortcut ? "4 Expert/Heavy额度" : "4额度",
           tone: "text-4",
           value: "-",
@@ -287,7 +287,6 @@ function buildFallbackRealQuotaState() {
       ],
       [
         {
-          label: "图片额度",
           tooltipLabel: "图片额度",
           tone: "image",
           value: "-",
@@ -296,7 +295,6 @@ function buildFallbackRealQuotaState() {
           symbol: "image",
         },
         {
-          label: "视频额度",
           tooltipLabel: "视频额度",
           tone: "video",
           value: "-",
@@ -314,42 +312,37 @@ function buildFallbackRealQuotaState() {
   };
 }
 
-function createRealQuotaCard(card) {
-  const cardNode = document.createElement("div");
-  cardNode.className = `real-quota-card real-quota-card--${card.tone || "neutral"} real-quota-card--state-${card.status || "empty"}`;
-  cardNode.title = `${card.tooltipLabel || card.label}: ${card.value}${card.detail ? ` ${card.detail}` : ""}`;
-
-  const header = document.createElement("div");
-  header.className = "real-quota-card-header";
+function createRealQuotaItem(card) {
+  const itemNode = document.createElement("div");
+  itemNode.className = "real-quota-item";
+  itemNode.title = `${card.tooltipLabel || card.markerText || ""}: ${card.value}${card.detail ? ` ${card.detail}` : ""}`;
 
   if (card.symbol) {
     const symbol = document.createElement("span");
-    symbol.className = "real-quota-card-symbol";
+    symbol.className = "real-quota-symbol";
     symbol.innerHTML = getRealQuotaCardIconSvg(card.symbol);
     symbol.setAttribute("aria-hidden", "true");
-    header.appendChild(symbol);
+    itemNode.appendChild(symbol);
   } else {
-    const label = document.createElement("span");
-    label.className = "real-quota-card-label";
-    label.textContent = card.label || "-";
-    header.appendChild(label);
+    const marker = document.createElement("span");
+    marker.className = "real-quota-marker";
+    marker.textContent = card.markerText || "-";
+    itemNode.appendChild(marker);
   }
 
-  const value = document.createElement("div");
-  value.className = "real-quota-card-value";
-  value.textContent = card.value || "-";
-
-  cardNode.appendChild(header);
-  cardNode.appendChild(value);
+  const pill = document.createElement("span");
+  pill.className = `real-quota-pill real-quota-pill--${card.tone || "neutral"} real-quota-pill--state-${card.status || "empty"}`;
+  pill.textContent = card.value || "-";
+  itemNode.appendChild(pill);
 
   if (card.detail) {
-    const detail = document.createElement("div");
-    detail.className = "real-quota-card-detail";
+    const detail = document.createElement("span");
+    detail.className = "real-quota-detail";
     detail.textContent = card.detail;
-    cardNode.appendChild(detail);
+    itemNode.appendChild(detail);
   }
 
-  return cardNode;
+  return itemNode;
 }
 
 function createRealQuotaCell(item) {
@@ -384,32 +377,31 @@ function createRealQuotaCell(item) {
 
   wrapper.appendChild(main);
 
-  const grid = document.createElement("div");
-  grid.className = "real-quota-grid";
+  const lines = document.createElement("div");
+  lines.className = "real-quota-lines";
 
   (Array.isArray(state.rows) ? state.rows : []).forEach((rowCards) => {
-    const row = document.createElement("div");
-    row.className = "real-quota-row";
-    (Array.isArray(rowCards) ? rowCards : []).forEach((card) => {
-      row.appendChild(createRealQuotaCard(card || {}));
+    const line = document.createElement("div");
+    line.className = "real-quota-line";
+    (Array.isArray(rowCards) ? rowCards : []).forEach((card, index) => {
+      if (index > 0) {
+        const separator = document.createElement("span");
+        separator.className = "real-quota-item-sep";
+        separator.textContent = "|";
+        line.appendChild(separator);
+      }
+      line.appendChild(createRealQuotaItem(card || {}));
     });
-    grid.appendChild(row);
+    lines.appendChild(line);
   });
 
-  wrapper.appendChild(grid);
+  wrapper.appendChild(lines);
 
   if (state.note) {
     const note = document.createElement("div");
     note.className = "real-quota-note";
     note.textContent = state.note;
     wrapper.appendChild(note);
-  }
-
-  if (state.modeHint) {
-    const hint = document.createElement("div");
-    hint.className = "real-quota-mode-hint";
-    hint.textContent = state.modeHint;
-    wrapper.appendChild(hint);
   }
 
   if (state.error) {

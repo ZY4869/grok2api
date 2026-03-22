@@ -14,17 +14,22 @@
     SUBSCRIPTION_TIER_SUPER_GROK_PRO: "SuperGrokPro",
   };
 
-  const CARD_GROUPS = {
+  const ITEM_GROUPS = {
     [DISPLAY_MODES.MODEL]: [
       [
-        { modelName: "grok-3", label: "3额度", tone: "text-3" },
-        { modelName: "grok-4", label: "4额度", tone: "text-4" },
+        { modelName: "grok-3", markerText: "3", tooltipLabel: "3额度", tone: "text-3" },
+        { modelName: "grok-4", markerText: "4", tooltipLabel: "4额度", tone: "text-4" },
       ],
       [
-        { modelName: "grok-imagine-1.0", label: "图片额度", tone: "image", symbol: "image" },
+        {
+          modelName: "grok-imagine-1.0",
+          tooltipLabel: "图片额度",
+          tone: "image",
+          symbol: "image",
+        },
         {
           modelName: "grok-imagine-1.0-video",
-          label: "视频额度",
+          tooltipLabel: "视频额度",
           tone: "video",
           symbol: "video",
         },
@@ -32,14 +37,29 @@
     ],
     [DISPLAY_MODES.SHORTCUT]: [
       [
-        { modelName: "grok-3", label: "3 Fast额度", tone: "text-3" },
-        { modelName: "grok-4", label: "4 Expert/Heavy额度", tone: "text-4" },
+        {
+          modelName: "grok-3",
+          markerText: "3",
+          tooltipLabel: "3 Fast额度",
+          tone: "text-3",
+        },
+        {
+          modelName: "grok-4",
+          markerText: "4",
+          tooltipLabel: "4 Expert/Heavy额度",
+          tone: "text-4",
+        },
       ],
       [
-        { modelName: "grok-imagine-1.0", label: "图片额度", tone: "image", symbol: "image" },
+        {
+          modelName: "grok-imagine-1.0",
+          tooltipLabel: "图片额度",
+          tone: "image",
+          symbol: "image",
+        },
         {
           modelName: "grok-imagine-1.0-video",
-          label: "视频额度",
+          tooltipLabel: "视频额度",
           tone: "video",
           symbol: "video",
         },
@@ -119,15 +139,15 @@
   }
 
   function buildRows(displayMode, rateLimits) {
-    const groups = CARD_GROUPS[normalizeDisplayMode(displayMode)] || CARD_GROUPS[DEFAULT_DISPLAY_MODE];
+    const groups = ITEM_GROUPS[normalizeDisplayMode(displayMode)] || ITEM_GROUPS[DEFAULT_DISPLAY_MODE];
     return groups.map((row) =>
       row.map((config) => {
         const valueState = describeRateLimit(rateLimits[config.modelName]);
         return {
           key: config.modelName,
           modelName: config.modelName,
-          label: config.label,
-          tooltipLabel: config.label,
+          markerText: config.markerText || "",
+          tooltipLabel: config.tooltipLabel || "",
           tone: config.tone,
           symbol: config.symbol || "",
           value: valueState.value,
