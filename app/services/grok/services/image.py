@@ -4,6 +4,7 @@ Grok image services.
 
 import asyncio
 import base64
+import io
 import math
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Union
 
 import orjson
+from PIL import Image, UnidentifiedImageError
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -753,29 +755,102 @@ class ImageWSBaseProcessor(BaseProcessor):
             return blob.split(",", 1)[1]
         return blob
 
-    def _guess_ext(self, blob: str) -> Optional[str]:
-        if not blob:
+    def _normalize_ext(self, ext: Optional[str]) -> Optional[str]:
+        if not ext or not isinstance(ext, str):
             return None
+        normalized = ext.strip().lower().lstrip(".")
+        if normalized == "jpeg":
+            normalized = "jpg"
+        if normalized in {"png", "jpg", "webp"}:
+            return normalized
+        return None
+
+    def _split_data_uri(self, blob: str) -> tuple[str, str]:
+        if not blob:
+            return "", ""
         header = ""
         data = blob
         if "," in blob and "base64" in blob.split(",", 1)[0]:
             header, data = blob.split(",", 1)
-        header = header.lower()
+        return header.lower(), data
+
+    def _guess_ext_from_header(self, header: str) -> Optional[str]:
         if "image/png" in header:
             return "png"
         if "image/jpeg" in header or "image/jpg" in header:
             return "jpg"
-        if data.startswith("iVBORw0KGgo"):
-            return "png"
-        if data.startswith("/9j/"):
-            return "jpg"
+        if "image/webp" in header:
+            return "webp"
         return None
 
+    def _guess_ext_from_bytes(self, raw: bytes) -> Optional[str]:
+        if not raw:
+            return None
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if raw.startswith(b"\xff\xd8\xff"):
+            return "jpg"
+        if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+            return "webp"
+        return None
+
+    def _guess_ext(
+        self, blob: str, *, raw: bytes = b"", explicit_ext: Optional[str] = None
+    ) -> Optional[str]:
+        normalized = self._normalize_ext(explicit_ext)
+        if normalized:
+            return normalized
+        header, _ = self._split_data_uri(blob)
+        normalized = self._guess_ext_from_header(header)
+        if normalized:
+            return normalized
+        normalized = self._guess_ext_from_bytes(raw)
+        if normalized:
+            return normalized
+        return None
+
+    def _resolve_save_format(self) -> str:
+        raw = str(get_config("image.save_format", "source") or "source").strip().lower()
+        if raw in {"source", "png"}:
+            return raw
+        logger.warning(f"Invalid image.save_format '{raw}', fallback to source")
+        return "source"
+
+    def _encode_png(self, raw: bytes) -> bytes:
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.mode == "P" and "transparency" in image.info:
+                converted = image.convert("RGBA")
+            elif image.mode in {"1", "L", "RGB", "RGBA"}:
+                converted = image.copy()
+            elif image.mode == "LA":
+                converted = image.convert("RGBA")
+            else:
+                converted = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+
+            buffer = io.BytesIO()
+            converted.save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    def _resolve_file_payload(
+        self, blob: str, *, is_final: bool, explicit_ext: Optional[str] = None
+    ) -> tuple[bytes, str]:
+        _, data = self._split_data_uri(blob)
+        raw = base64.b64decode(data)
+        save_format = self._resolve_save_format()
+
+        if save_format == "png":
+            try:
+                return self._encode_png(raw), "png"
+            except (UnidentifiedImageError, OSError, ValueError) as exc:
+                logger.warning(f"Image PNG transcode failed, fallback to source format: {exc}")
+
+        ext = self._guess_ext(blob, raw=raw, explicit_ext=explicit_ext)
+        if not ext:
+            ext = "jpg" if is_final else "png"
+        return raw, ext
+
     def _filename(self, image_id: str, is_final: bool, ext: Optional[str] = None) -> str:
-        if ext:
-            ext = ext.lower()
-            if ext == "jpeg":
-                ext = "jpg"
+        ext = self._normalize_ext(ext)
         if not ext:
             ext = "jpg" if is_final else "png"
         return f"{image_id}.{ext}"
@@ -789,17 +864,20 @@ class ImageWSBaseProcessor(BaseProcessor):
     async def _save_blob(
         self, image_id: str, blob: str, is_final: bool, ext: Optional[str] = None
     ) -> str:
-        data = self._strip_base64(blob)
-        if not data:
+        if not self._strip_base64(blob):
             return ""
         image_dir = self._ensure_image_dir()
-        ext = ext or self._guess_ext(blob)
-        filename = self._filename(image_id, is_final, ext=ext)
+        file_bytes, output_ext = self._resolve_file_payload(
+            blob,
+            is_final=is_final,
+            explicit_ext=ext,
+        )
+        filename = self._filename(image_id, is_final, ext=output_ext)
         filepath = image_dir / filename
 
         def _write_file():
             with open(filepath, "wb") as f:
-                f.write(base64.b64decode(data))
+                f.write(file_bytes)
 
         await asyncio.to_thread(_write_file)
         return self._build_file_url(filename)
