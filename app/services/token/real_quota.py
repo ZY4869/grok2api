@@ -18,7 +18,18 @@ from app.services.reverse.refresh_x_subscription_status import (
 from app.services.reverse.subscriptions import SubscriptionsReverse
 from app.services.reverse.utils.session import ResettableSession
 
-REAL_QUOTA_MODELS = ("grok-3", "grok-4")
+REAL_QUOTA_MODELS = (
+    "grok-3",
+    "grok-4",
+    "grok-imagine-1.0",
+    "grok-imagine-1.0-video",
+)
+REAL_QUOTA_MODEL_LABELS = {
+    "grok-3": "text (grok-3)",
+    "grok-4": "text (grok-4)",
+    "grok-imagine-1.0": "image",
+    "grok-imagine-1.0-video": "video",
+}
 ACTIVE_SUBSCRIPTION_STATUSES = {"ACTIVE", "SUBSCRIPTION_STATUS_ACTIVE"}
 INVALID_TIER = "SUBSCRIPTION_TIER_INVALID"
 TIER_LABELS = {
@@ -144,10 +155,11 @@ def _normalize_rate_limit(payload: Any) -> dict[str, Any]:
 
 
 def _describe_rate_limit(model_name: str, payload: dict[str, Any]) -> str:
+    display_name = REAL_QUOTA_MODEL_LABELS.get(model_name, model_name)
     if not isinstance(payload, dict):
-        return f"{model_name}: -"
+        return f"{display_name}: -"
     if payload.get("error"):
-        return f"{model_name}: failed"
+        return f"{display_name}: failed"
 
     remaining = payload.get("remainingTokens")
     total = payload.get("totalTokens")
@@ -157,15 +169,15 @@ def _describe_rate_limit(model_name: str, payload: dict[str, Any]) -> str:
         total = payload.get("totalQueries")
 
     if remaining is not None and total is not None:
-        return f"{model_name}: {remaining}/{total}"
+        return f"{display_name}: {remaining}/{total}"
     if remaining is not None:
-        return f"{model_name}: {remaining}"
+        return f"{display_name}: {remaining}"
 
     wait = payload.get("waitTimeSeconds")
     if wait:
-        return f"{model_name}: wait {wait}s"
+        return f"{display_name}: wait {wait}s"
 
-    return f"{model_name}: -"
+    return f"{display_name}: -"
 
 
 def _build_summary(rate_limits: dict[str, Any]) -> str:
@@ -212,17 +224,44 @@ class RealQuotaRefreshService:
         raw_token = token[4:] if token.startswith("sso=") else token
 
         try:
+            partial_errors = []
+            subscription_payload: Any = {}
+            rate_limits: dict[str, Any] = {}
+            success_models = 0
+
             async with _get_real_quota_semaphore():
                 async with ResettableSession() as session:
-                    await RefreshXSubscriptionStatusReverse.request(session, raw_token)
-                    subscriptions_response = await SubscriptionsReverse.request(
-                        session, raw_token
-                    )
-                    subscription_payload = _safe_json(subscriptions_response)
+                    # This endpoint appears to be optional in practice. Some accounts
+                    # return 501, but subscriptions/rate-limits can still be queried.
+                    try:
+                        await RefreshXSubscriptionStatusReverse.request(
+                            session, raw_token
+                        )
+                    except Exception as exc:
+                        error_text = str(exc)
+                        partial_errors.append(
+                            f"refresh-subscription: {error_text}"
+                        )
+                        logger.warning(
+                            "Real quota refresh: token={} refresh-x-subscription-status failed: {}",
+                            f"{raw_token[:10]}...",
+                            error_text,
+                        )
 
-                    partial_errors = []
-                    rate_limits: dict[str, Any] = {}
-                    success_models = 0
+                    try:
+                        subscriptions_response = await SubscriptionsReverse.request(
+                            session, raw_token
+                        )
+                        subscription_payload = _safe_json(subscriptions_response)
+                    except Exception as exc:
+                        error_text = str(exc)
+                        partial_errors.append(f"subscriptions: {error_text}")
+                        logger.warning(
+                            "Real quota refresh: token={} subscriptions failed: {}",
+                            f"{raw_token[:10]}...",
+                            error_text,
+                        )
+
                     for model_name in REAL_QUOTA_MODELS:
                         try:
                             response = await RateLimitsReverse.request(
@@ -239,7 +278,10 @@ class RealQuotaRefreshService:
                             rate_limits[model_name] = {"error": error_text}
                             partial_errors.append(f"{model_name}: {error_text}")
                             logger.warning(
-                                f"Real quota refresh: model={model_name} token={raw_token[:10]}... failed: {error_text}"
+                                "Real quota refresh: model={} token={} failed: {}",
+                                model_name,
+                                f"{raw_token[:10]}...",
+                                error_text,
                             )
 
             subscriptions = [
@@ -266,8 +308,6 @@ class RealQuotaRefreshService:
             error_text = ""
             if success_models == 0:
                 error_text = "No live model quota returned"
-            elif partial_errors:
-                error_text = "; ".join(partial_errors)
 
             _apply_snapshot(mgr, raw_token, snapshot, error_text)
             return snapshot

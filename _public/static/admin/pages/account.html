@@ -7,12 +7,12 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/common/css/common.css?v=1.7.0">
   <link rel="stylesheet" href="/static/admin/css/token.css?v=1.7.0">
-  <link rel="stylesheet" href="/static/admin/css/account.css?v=1.8.0">
+  <link rel="stylesheet" href="/static/admin/css/account.css?v=1.8.2">
   <link rel="stylesheet" href="/static/common/css/toast.css">
 </head>
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
   <div id="app-header"></div>
-  <main class="space-y-6 flex-1 w-full max-w-6xl mx-auto px-6 py-8 fade-in" style="padding-top: 5rem;">
+  <main class="account-page-main space-y-6 flex-1 w-full mx-auto py-8 fade-in" style="padding-top: 5rem;">
     <div class="flex justify-between items-center flex-wrap gap-3">
       <div>
         <h2 class="text-2xl font-semibold">账号管理</h2>
@@ -75,8 +75,20 @@
       <div id="check-progress" class="hidden text-xs text-[var(--accents-4)] ml-2"></div>
     </div>
 
-    <div class="overflow-x-auto account-table-wrap">
-      <table class="geist-table min-w-[1320px] w-full">
+    <div class="account-table-wrap">
+      <table class="geist-table account-table w-full">
+        <colgroup>
+          <col class="account-col-check">
+          <col class="account-col-token">
+          <col class="account-col-email">
+          <col class="account-col-pool">
+          <col class="account-col-alive">
+          <col class="account-col-nsfw">
+          <col class="account-col-local-quota">
+          <col class="account-col-real-quota">
+          <col class="account-col-last-check">
+          <col class="account-col-actions">
+        </colgroup>
         <thead>
           <tr>
             <th class="w-10">
@@ -88,7 +100,15 @@
             <th class="w-20 text-center">可用</th>
             <th class="w-16 text-center">NSFW</th>
             <th class="w-16 text-center">本地额度</th>
-            <th class="w-64 text-left">真实额度</th>
+            <th class="w-64 text-left real-quota-header-cell">
+              <div class="real-quota-header">
+                <span class="real-quota-header-title">真实额度</span>
+                <div class="real-quota-display-toggle" role="group" aria-label="真实额度展示模式">
+                  <button type="button" class="real-quota-display-btn" data-real-quota-display-mode="model" aria-pressed="false">按模型</button>
+                  <button type="button" class="real-quota-display-btn" data-real-quota-display-mode="shortcut" aria-pressed="false">按快捷模式</button>
+                </div>
+              </div>
+            </th>
             <th class="w-36 text-center">可用检测</th>
             <th class="w-40 text-center">操作</th>
           </tr>
@@ -203,7 +223,7 @@
   <script src="/static/common/js/batch-sse.js"></script>
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/admin/js/account-import.js?v=1.7.3"></script>
-  <script src="/static/admin/js/account-real-quota.js?v=1.8.0"></script>
-  <script src="/static/admin/js/account.js?v=1.8.0"></script>
+  <script src="/static/admin/js/account-real-quota.js?v=1.8.2"></script>
+  <script src="/static/admin/js/account.js?v=1.8.2"></script>
 </body>
 </html>

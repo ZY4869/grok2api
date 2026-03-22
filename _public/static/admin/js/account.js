@@ -3,6 +3,12 @@ let allTokens = [];
 let pendingConfirmFn = null;
 let importController = null;
 let editingToken = null;
+const REAL_QUOTA_DISPLAY_MODE_KEY = "accountRealQuotaDisplayMode";
+const REAL_QUOTA_DISPLAY_MODES = {
+  MODEL: "model",
+  SHORTCUT: "shortcut",
+};
+let realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
 
 const byId = (id) => document.getElementById(id);
 const CHECK_ALL_BUTTON_HTML = `
@@ -63,6 +69,78 @@ function createIconButton({ title, className, svg, onClick }) {
   button.innerHTML = svg;
   button.addEventListener("click", onClick);
   return button;
+}
+
+function getRealQuotaHelper() {
+  return window.AccountRealQuota &&
+    typeof window.AccountRealQuota.getRealQuotaState === "function"
+    ? window.AccountRealQuota
+    : null;
+}
+
+function normalizeRealQuotaDisplayMode(value) {
+  const helper = getRealQuotaHelper();
+  if (helper && typeof helper.normalizeDisplayMode === "function") {
+    return helper.normalizeDisplayMode(value);
+  }
+  return value === REAL_QUOTA_DISPLAY_MODES.SHORTCUT
+    ? REAL_QUOTA_DISPLAY_MODES.SHORTCUT
+    : REAL_QUOTA_DISPLAY_MODES.MODEL;
+}
+
+function loadRealQuotaDisplayMode() {
+  let stored = "";
+  try {
+    stored = localStorage.getItem(REAL_QUOTA_DISPLAY_MODE_KEY) || "";
+  } catch {
+    stored = "";
+  }
+
+  const helper = getRealQuotaHelper();
+  const defaultMode = helper && helper.DEFAULT_DISPLAY_MODE
+    ? helper.DEFAULT_DISPLAY_MODE
+    : REAL_QUOTA_DISPLAY_MODES.MODEL;
+  return normalizeRealQuotaDisplayMode(stored || defaultMode);
+}
+
+function saveRealQuotaDisplayMode(value) {
+  try {
+    localStorage.setItem(REAL_QUOTA_DISPLAY_MODE_KEY, value);
+  } catch {
+    // Ignore storage errors in private mode or locked-down browsers.
+  }
+}
+
+function syncRealQuotaDisplayModeToggle() {
+  document.querySelectorAll("[data-real-quota-display-mode]").forEach((button) => {
+    const isActive = button.dataset.realQuotaDisplayMode === realQuotaDisplayMode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+}
+
+function setRealQuotaDisplayMode(value) {
+  const nextMode = normalizeRealQuotaDisplayMode(value);
+  const changed = nextMode !== realQuotaDisplayMode;
+  realQuotaDisplayMode = nextMode;
+  saveRealQuotaDisplayMode(nextMode);
+  syncRealQuotaDisplayModeToggle();
+
+  if (changed) {
+    renderTable();
+  }
+}
+
+function initRealQuotaDisplayModeToggle() {
+  realQuotaDisplayMode = loadRealQuotaDisplayMode();
+  document.querySelectorAll("[data-real-quota-display-mode]").forEach((button) => {
+    if (button.dataset.bound === "1") return;
+    button.dataset.bound = "1";
+    button.addEventListener("click", () => {
+      setRealQuotaDisplayMode(button.dataset.realQuotaDisplayMode || "");
+    });
+  });
+  syncRealQuotaDisplayModeToggle();
 }
 
 function ensureImportController() {
@@ -156,25 +234,132 @@ function getAliveDisplay(item) {
   return '<span class="text-gray-400" title="未检测">-</span>';
 }
 
+function getRealQuotaCardIconSvg(symbol) {
+  if (symbol === "image") {
+    return `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3.5" y="4.5" width="17" height="15" rx="3"></rect>
+        <circle cx="9" cy="10" r="1.5"></circle>
+        <path d="M6.5 17l4.2-4.2a1 1 0 0 1 1.4 0L14 14.7"></path>
+        <path d="M12.5 13.5l1.8-1.8a1 1 0 0 1 1.4 0l2.8 2.8"></path>
+      </svg>
+    `;
+  }
+
+  if (symbol === "video") {
+    return `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3.5" y="5.5" width="12" height="13" rx="3"></rect>
+        <path d="M15.5 10l4-2.5a.7.7 0 0 1 1.1.6v8a.7.7 0 0 1-1.1.6l-4-2.5"></path>
+      </svg>
+    `;
+  }
+
+  return "";
+}
+
+function buildFallbackRealQuotaState() {
+  const isShortcut = realQuotaDisplayMode === REAL_QUOTA_DISPLAY_MODES.SHORTCUT;
+  return {
+    displayMode: realQuotaDisplayMode,
+    label: "未查询",
+    badgeClass: "badge-gray",
+    rows: [
+      [
+        {
+          label: isShortcut ? "3 Fast额度" : "3额度",
+          tooltipLabel: isShortcut ? "3 Fast额度" : "3额度",
+          tone: "text-3",
+          value: "-",
+          detail: "",
+          status: "empty",
+          symbol: "",
+        },
+        {
+          label: isShortcut ? "4 Expert/Heavy额度" : "4额度",
+          tooltipLabel: isShortcut ? "4 Expert/Heavy额度" : "4额度",
+          tone: "text-4",
+          value: "-",
+          detail: "",
+          status: "empty",
+          symbol: "",
+        },
+      ],
+      [
+        {
+          label: "图片额度",
+          tooltipLabel: "图片额度",
+          tone: "image",
+          value: "-",
+          detail: "",
+          status: "empty",
+          symbol: "image",
+        },
+        {
+          label: "视频额度",
+          tooltipLabel: "视频额度",
+          tone: "video",
+          value: "-",
+          detail: "",
+          status: "empty",
+          symbol: "video",
+        },
+      ],
+    ],
+    note: "点击刷新真实额度",
+    modeHint: isShortcut ? "快捷模式最终消耗对应底层模型额度，Auto 会在 3 Fast / 4 Expert 间分配。" : "",
+    meta: "",
+    error: "",
+    title: "",
+  };
+}
+
+function createRealQuotaCard(card) {
+  const cardNode = document.createElement("div");
+  cardNode.className = `real-quota-card real-quota-card--${card.tone || "neutral"} real-quota-card--state-${card.status || "empty"}`;
+  cardNode.title = `${card.tooltipLabel || card.label}: ${card.value}${card.detail ? ` ${card.detail}` : ""}`;
+
+  const header = document.createElement("div");
+  header.className = "real-quota-card-header";
+
+  if (card.symbol) {
+    const symbol = document.createElement("span");
+    symbol.className = "real-quota-card-symbol";
+    symbol.innerHTML = getRealQuotaCardIconSvg(card.symbol);
+    symbol.setAttribute("aria-hidden", "true");
+    header.appendChild(symbol);
+  } else {
+    const label = document.createElement("span");
+    label.className = "real-quota-card-label";
+    label.textContent = card.label || "-";
+    header.appendChild(label);
+  }
+
+  const value = document.createElement("div");
+  value.className = "real-quota-card-value";
+  value.textContent = card.value || "-";
+
+  cardNode.appendChild(header);
+  cardNode.appendChild(value);
+
+  if (card.detail) {
+    const detail = document.createElement("div");
+    detail.className = "real-quota-card-detail";
+    detail.textContent = card.detail;
+    cardNode.appendChild(detail);
+  }
+
+  return cardNode;
+}
+
 function createRealQuotaCell(item) {
   const cell = document.createElement("td");
   cell.className = "text-left real-quota-cell";
 
-  const helper =
-    window.AccountRealQuota &&
-    typeof window.AccountRealQuota.getRealQuotaState === "function"
-      ? window.AccountRealQuota
-      : null;
+  const helper = getRealQuotaHelper();
   const state = helper
-    ? helper.getRealQuotaState(item)
-    : {
-        label: "未查询",
-        badgeClass: "badge-gray",
-        summary: "点击刷新真实额度",
-        meta: "",
-        error: "",
-        title: "",
-      };
+    ? helper.getRealQuotaState(item, { displayMode: realQuotaDisplayMode })
+    : buildFallbackRealQuotaState();
 
   const wrapper = document.createElement("div");
   wrapper.className = "real-quota-wrap";
@@ -197,12 +382,35 @@ function createRealQuotaCell(item) {
     main.appendChild(meta);
   }
 
-  const summary = document.createElement("div");
-  summary.className = "real-quota-summary";
-  summary.textContent = state.summary || "点击刷新真实额度";
-
   wrapper.appendChild(main);
-  wrapper.appendChild(summary);
+
+  const grid = document.createElement("div");
+  grid.className = "real-quota-grid";
+
+  (Array.isArray(state.rows) ? state.rows : []).forEach((rowCards) => {
+    const row = document.createElement("div");
+    row.className = "real-quota-row";
+    (Array.isArray(rowCards) ? rowCards : []).forEach((card) => {
+      row.appendChild(createRealQuotaCard(card || {}));
+    });
+    grid.appendChild(row);
+  });
+
+  wrapper.appendChild(grid);
+
+  if (state.note) {
+    const note = document.createElement("div");
+    note.className = "real-quota-note";
+    note.textContent = state.note;
+    wrapper.appendChild(note);
+  }
+
+  if (state.modeHint) {
+    const hint = document.createElement("div");
+    hint.className = "real-quota-mode-hint";
+    hint.textContent = state.modeHint;
+    wrapper.appendChild(hint);
+  }
 
   if (state.error) {
     const error = document.createElement("div");
@@ -242,7 +450,7 @@ function renderTable() {
     checkCell.appendChild(checkbox);
 
     const tokenCell = document.createElement("td");
-    tokenCell.className = "text-left";
+    tokenCell.className = "text-left account-token-cell";
     tokenCell.innerHTML = `
       <span class="font-mono text-xs text-gray-500" title="${escapeHtml(item.token)}">
         ${escapeHtml(shortenToken(item.token))}
@@ -250,8 +458,9 @@ function renderTable() {
     `;
 
     const emailCell = document.createElement("td");
-    emailCell.className = "text-left text-sm";
+    emailCell.className = "text-left text-sm account-email-cell";
     emailCell.textContent = item.email || "-";
+    emailCell.title = item.email || "";
 
     const poolCell = document.createElement("td");
     poolCell.className = "text-center";
@@ -274,13 +483,13 @@ function renderTable() {
     const realQuotaCell = createRealQuotaCell(item);
 
     const lastCheckCell = document.createElement("td");
-    lastCheckCell.className = "text-center text-xs text-gray-500";
+    lastCheckCell.className = "text-center text-xs text-gray-500 account-last-check-cell";
     lastCheckCell.textContent = formatTime(item.last_alive_check_at);
 
     const actionCell = document.createElement("td");
     actionCell.className = "text-center";
     const actionGroup = document.createElement("div");
-    actionGroup.className = "flex items-center justify-center gap-1";
+    actionGroup.className = "account-actions flex items-center justify-center gap-1";
 
     actionGroup.appendChild(
       createIconButton({
@@ -366,12 +575,14 @@ function renderTable() {
 
   tbody.replaceChildren(fragment);
   updateSelectAllState();
+  syncRealQuotaDisplayModeToggle();
 }
 
 async function init() {
   apiKey = await ensureAdminKey();
   if (apiKey === null) return;
 
+  initRealQuotaDisplayModeToggle();
   ensureImportController();
   await loadAccountData();
 }

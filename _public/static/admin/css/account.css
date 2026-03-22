@@ -116,20 +116,134 @@
   color: #475569;
 }
 
+.account-page-main {
+  max-width: min(1680px, calc(100vw - 24px));
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.account-table-wrap {
+  width: 100%;
+}
+
+.account-table {
+  table-layout: fixed;
+}
+
+.account-table thead th {
+  height: auto;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.account-table th,
+.account-table td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.account-col-check {
+  width: 40px;
+}
+
+.account-col-token {
+  width: 156px;
+}
+
+.account-col-email {
+  width: 148px;
+}
+
+.account-col-pool {
+  width: 82px;
+}
+
+.account-col-alive,
+.account-col-nsfw {
+  width: 60px;
+}
+
+.account-col-local-quota {
+  width: 72px;
+}
+
+.account-col-real-quota {
+  width: 338px;
+}
+
+.account-col-last-check {
+  width: 96px;
+}
+
+.account-col-actions {
+  width: 106px;
+}
+
 .real-quota-cell {
-  min-width: 230px;
+  min-width: 0;
+}
+
+.real-quota-header-cell {
+  text-align: left;
+}
+
+.real-quota-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.real-quota-header-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accents-6);
+}
+
+.real-quota-display-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f8fafc;
+}
+
+.real-quota-display-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accents-4);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.real-quota-display-btn:hover {
+  color: var(--accents-7);
+}
+
+.real-quota-display-btn.is-active {
+  background: #fff;
+  color: var(--accents-7);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .real-quota-wrap {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+  max-width: 100%;
 }
 
 .real-quota-main {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -138,10 +252,130 @@
   color: var(--accents-4);
 }
 
-.real-quota-summary {
+.real-quota-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.real-quota-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.real-quota-card {
+  min-width: 0;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 9px 10px;
+}
+
+.real-quota-card-header {
+  display: flex;
+  align-items: center;
+  min-height: 18px;
+  margin-bottom: 6px;
+}
+
+.real-quota-card-label {
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.real-quota-card-symbol {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.real-quota-card-symbol svg {
+  width: 18px;
+  height: 18px;
+}
+
+.real-quota-card-value {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.real-quota-card-detail {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+.real-quota-card--text-3 {
+  background: #eef4ff;
+  border-color: #d8e5ff;
+  color: #34557a;
+}
+
+.real-quota-card--text-4 {
+  background: #fff4e8;
+  border-color: #ffe0be;
+  color: #8b4d12;
+}
+
+.real-quota-card--image {
+  background: #eafaf5;
+  border-color: #c7f0e1;
+  color: #146c58;
+}
+
+.real-quota-card--video {
+  background: #fff0f7;
+  border-color: #ffd0e3;
+  color: #9d2f68;
+}
+
+.real-quota-card--text-3 .real-quota-card-label,
+.real-quota-card--text-4 .real-quota-card-label,
+.real-quota-card--image .real-quota-card-label,
+.real-quota-card--video .real-quota-card-label,
+.real-quota-card--text-3 .real-quota-card-symbol,
+.real-quota-card--text-4 .real-quota-card-symbol,
+.real-quota-card--image .real-quota-card-symbol,
+.real-quota-card--video .real-quota-card-symbol {
+  color: inherit;
+}
+
+.real-quota-card--state-empty .real-quota-card-value {
+  color: #64748b;
+}
+
+.real-quota-card--state-wait .real-quota-card-value {
+  font-size: 15px;
+}
+
+.real-quota-card--state-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+.real-quota-card--state-error .real-quota-card-value {
+  font-size: 14px;
+  color: #b91c1c;
+}
+
+.real-quota-note,
+.real-quota-mode-hint {
+  font-size: 10px;
   line-height: 1.45;
-  color: var(--accents-5);
+  color: var(--accents-4);
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -149,5 +383,84 @@
   font-size: 11px;
   line-height: 1.45;
   color: #b91c1c;
+  overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.account-token-cell .font-mono {
+  display: block;
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.account-email-cell {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.account-last-check-cell {
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  max-width: 98px;
+  margin: 0 auto;
+}
+
+@media (max-width: 1360px) {
+  .account-col-token {
+    width: 144px;
+  }
+
+  .account-col-email {
+    width: 136px;
+  }
+
+  .account-col-real-quota {
+    width: 320px;
+  }
+
+  .account-col-actions {
+    width: 100px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .account-col-real-quota {
+    width: 304px;
+  }
+
+  .real-quota-card {
+    padding: 8px 9px;
+  }
+
+  .real-quota-card-value {
+    font-size: 15px;
+  }
+}
+
+@media (max-width: 900px) {
+  .account-page-main {
+    max-width: calc(100vw - 16px);
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .account-table th,
+  .account-table td {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .real-quota-display-btn {
+    padding: 0 8px;
+    font-size: 10px;
+  }
 }

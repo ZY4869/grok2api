@@ -1,4 +1,10 @@
 (function (global) {
+  const DISPLAY_MODES = {
+    MODEL: "model",
+    SHORTCUT: "shortcut",
+  };
+  const DEFAULT_DISPLAY_MODE = DISPLAY_MODES.MODEL;
+
   const TIER_LABELS = {
     SUBSCRIPTION_TIER_INVALID: "Free",
     SUBSCRIPTION_TIER_X_BASIC: "Basic",
@@ -7,6 +13,41 @@
     SUBSCRIPTION_TIER_GROK_PRO: "SuperGrok",
     SUBSCRIPTION_TIER_SUPER_GROK_PRO: "SuperGrokPro",
   };
+
+  const CARD_GROUPS = {
+    [DISPLAY_MODES.MODEL]: [
+      [
+        { modelName: "grok-3", label: "3额度", tone: "text-3" },
+        { modelName: "grok-4", label: "4额度", tone: "text-4" },
+      ],
+      [
+        { modelName: "grok-imagine-1.0", label: "图片额度", tone: "image", symbol: "image" },
+        {
+          modelName: "grok-imagine-1.0-video",
+          label: "视频额度",
+          tone: "video",
+          symbol: "video",
+        },
+      ],
+    ],
+    [DISPLAY_MODES.SHORTCUT]: [
+      [
+        { modelName: "grok-3", label: "3 Fast额度", tone: "text-3" },
+        { modelName: "grok-4", label: "4 Expert/Heavy额度", tone: "text-4" },
+      ],
+      [
+        { modelName: "grok-imagine-1.0", label: "图片额度", tone: "image", symbol: "image" },
+        {
+          modelName: "grok-imagine-1.0-video",
+          label: "视频额度",
+          tone: "video",
+          symbol: "video",
+        },
+      ],
+    ],
+  };
+
+  const SHORTCUT_MODE_HINT = "快捷模式最终消耗对应底层模型额度，Auto 会在 3 Fast / 4 Expert 间分配。";
 
   const SUPER_TIERS = new Set([
     "SUBSCRIPTION_TIER_GROK_PRO",
@@ -17,6 +58,10 @@
     "SUBSCRIPTION_TIER_X_PREMIUM",
     "SUBSCRIPTION_TIER_X_PREMIUM_PLUS",
   ]);
+
+  function normalizeDisplayMode(mode) {
+    return mode === DISPLAY_MODES.SHORTCUT ? DISPLAY_MODES.SHORTCUT : DEFAULT_DISPLAY_MODE;
+  }
 
   function formatTimestamp(timestamp) {
     if (!timestamp) return "";
@@ -49,27 +94,56 @@
     return "badge-gray";
   }
 
-  function formatRateLimitSummary(modelName, limit) {
-    if (!limit || typeof limit !== "object") return `${modelName}: -`;
-    if (limit.error) return `${modelName}: 刷新失败`;
+  function describeRateLimit(limit) {
+    if (!limit || typeof limit !== "object") {
+      return { value: "-", detail: "", status: "empty" };
+    }
+    if (limit.error) {
+      return { value: "刷新失败", detail: "", status: "error" };
+    }
 
     const remaining = toFiniteNumber(limit.remainingTokens ?? limit.remainingQueries);
     const total = toFiniteNumber(limit.totalTokens ?? limit.totalQueries);
     const waitTimeSeconds = toFiniteNumber(limit.waitTimeSeconds);
 
     if (remaining !== null && total !== null) {
-      return `${modelName}: ${remaining}/${total}`;
+      return { value: `${remaining}/${total}`, detail: "", status: "ready" };
     }
     if (remaining !== null) {
-      return `${modelName}: ${remaining}`;
+      return { value: `${remaining}`, detail: "", status: "ready" };
     }
     if (waitTimeSeconds !== null && waitTimeSeconds > 0) {
-      return `${modelName}: ${waitTimeSeconds}s 后恢复`;
+      return { value: `${waitTimeSeconds}s`, detail: "后恢复", status: "wait" };
     }
-    return `${modelName}: -`;
+    return { value: "-", detail: "", status: "empty" };
   }
 
-  function buildTitle(item, label, error) {
+  function buildRows(displayMode, rateLimits) {
+    const groups = CARD_GROUPS[normalizeDisplayMode(displayMode)] || CARD_GROUPS[DEFAULT_DISPLAY_MODE];
+    return groups.map((row) =>
+      row.map((config) => {
+        const valueState = describeRateLimit(rateLimits[config.modelName]);
+        return {
+          key: config.modelName,
+          modelName: config.modelName,
+          label: config.label,
+          tooltipLabel: config.label,
+          tone: config.tone,
+          symbol: config.symbol || "",
+          value: valueState.value,
+          detail: valueState.detail,
+          status: valueState.status,
+        };
+      })
+    );
+  }
+
+  function formatCardTitle(card) {
+    const suffix = card.detail ? ` ${card.detail}` : "";
+    return `${card.tooltipLabel}: ${card.value}${suffix}`;
+  }
+
+  function buildTitle(item, label, error, displayMode) {
     const quota =
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
     const lines = [];
@@ -100,9 +174,13 @@
       quota && quota.rate_limits && typeof quota.rate_limits === "object"
         ? quota.rate_limits
         : {};
-    Object.keys(rateLimits).forEach((modelName) => {
-      lines.push(formatRateLimitSummary(modelName, rateLimits[modelName]));
+    buildRows(displayMode, rateLimits).flat().forEach((card) => {
+      lines.push(formatCardTitle(card));
     });
+
+    if (normalizeDisplayMode(displayMode) === DISPLAY_MODES.SHORTCUT) {
+      lines.push(`提示: ${SHORTCUT_MODE_HINT}`);
+    }
 
     if (error) {
       lines.push(`错误: ${error}`);
@@ -115,29 +193,30 @@
     return lines.join("\n");
   }
 
-  function getRealQuotaState(item) {
+  function getRealQuotaState(item, options = {}) {
     const quota =
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
+    const displayMode = normalizeDisplayMode(options.displayMode);
     const hasData = Boolean(quota || item.real_tier || item.real_tier_name);
     const tier = item.real_tier || (quota && quota.subscription_tier) || "";
-    const partialErrors =
-      quota && Array.isArray(quota.partial_errors) ? quota.partial_errors : [];
-    const backendError = item.last_real_quota_error || "";
-    const error = backendError || partialErrors.join("；");
-
     const rateLimits =
       quota && quota.rate_limits && typeof quota.rate_limits === "object"
         ? quota.rate_limits
         : {};
     const modelNames = Object.keys(rateLimits);
-    const summary = modelNames.length
-      ? modelNames
-          .map((modelName) => formatRateLimitSummary(modelName, rateLimits[modelName]))
-          .join(" | ")
-      : error
+    const hasLiveQuota = modelNames.some((modelName) => {
+      const payload = rateLimits[modelName];
+      return payload && typeof payload === "object" && !payload.error;
+    });
+    const partialErrors =
+      quota && Array.isArray(quota.partial_errors) ? quota.partial_errors : [];
+    const backendError = item.last_real_quota_error || "";
+    const error = backendError || (!hasLiveQuota ? partialErrors.join("；") : "");
+    const note = !hasData && !error
+      ? "点击刷新真实额度"
+      : !hasLiveQuota && error
         ? "本次刷新未获取到实时额度"
-        : "点击刷新真实额度";
-
+        : "";
     const label = !hasData && error
       ? "刷新失败"
       : hasData
@@ -145,22 +224,29 @@
         : "未查询";
 
     return {
+      displayMode,
       label,
       badgeClass: getBadgeClass(tier, Boolean(error), hasData),
-      summary,
+      rows: buildRows(displayMode, rateLimits),
+      note,
+      modeHint: displayMode === DISPLAY_MODES.SHORTCUT && (hasData || modelNames.length > 0)
+        ? SHORTCUT_MODE_HINT
+        : "",
       meta: item.last_real_quota_check_at
         ? `更新 ${formatTimestamp(item.last_real_quota_check_at)}`
         : "",
       error,
-      title: buildTitle(item, label, error),
+      title: buildTitle(item, label, error, displayMode),
     };
   }
 
   const api = {
-    formatRateLimitSummary,
+    DEFAULT_DISPLAY_MODE,
+    DISPLAY_MODES,
     formatTimestamp,
     getRealQuotaState,
     getTierLabel,
+    normalizeDisplayMode,
   };
 
   global.AccountRealQuota = api;
