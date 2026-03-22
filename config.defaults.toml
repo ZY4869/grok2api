@@ -130,8 +130,6 @@ final_min_bytes = 100000
 blocked_parallel_attempts = 5
 # 是否启用并行补偿（启用时优先使用不同 token）
 blocked_parallel_enabled = true
-# 本地 URL 图片保存格式：source 按上游真实格式保存，png 会真实转码为 PNG
-save_format = "source"
 
 
 # ==================== SuperImage 配置 ====================

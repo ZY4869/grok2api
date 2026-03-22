@@ -4,7 +4,6 @@ Grok image services.
 
 import asyncio
 import base64
-import io
 import math
 import time
 from dataclasses import dataclass
@@ -12,7 +11,6 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Union
 
 import orjson
-from PIL import Image, UnidentifiedImageError
 
 from app.core.config import get_config
 from app.core.logger import logger
@@ -809,41 +807,11 @@ class ImageWSBaseProcessor(BaseProcessor):
             return normalized
         return None
 
-    def _resolve_save_format(self) -> str:
-        raw = str(get_config("image.save_format", "source") or "source").strip().lower()
-        if raw in {"source", "png"}:
-            return raw
-        logger.warning(f"Invalid image.save_format '{raw}', fallback to source")
-        return "source"
-
-    def _encode_png(self, raw: bytes) -> bytes:
-        with Image.open(io.BytesIO(raw)) as image:
-            if image.mode == "P" and "transparency" in image.info:
-                converted = image.convert("RGBA")
-            elif image.mode in {"1", "L", "RGB", "RGBA"}:
-                converted = image.copy()
-            elif image.mode == "LA":
-                converted = image.convert("RGBA")
-            else:
-                converted = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-
-            buffer = io.BytesIO()
-            converted.save(buffer, format="PNG")
-            return buffer.getvalue()
-
     def _resolve_file_payload(
         self, blob: str, *, is_final: bool, explicit_ext: Optional[str] = None
     ) -> tuple[bytes, str]:
         _, data = self._split_data_uri(blob)
         raw = base64.b64decode(data)
-        save_format = self._resolve_save_format()
-
-        if save_format == "png":
-            try:
-                return self._encode_png(raw), "png"
-            except (UnidentifiedImageError, OSError, ValueError) as exc:
-                logger.warning(f"Image PNG transcode failed, fallback to source format: {exc}")
-
         ext = self._guess_ext(blob, raw=raw, explicit_ext=explicit_ext)
         if not ext:
             ext = "jpg" if is_final else "png"

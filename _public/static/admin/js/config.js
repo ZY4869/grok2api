@@ -112,8 +112,7 @@ const LOCALE_MAP = {
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
     "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
     "blocked_parallel_enabled": { title: "启用并行补偿", desc: "疑似审查/拦截时，是否启用并行补偿生成。" },
-    "blocked_parallel_attempts": { title: "拦截补偿并发次数", desc: "疑似审查/拦截导致无最终图时，自动并行补偿生成次数。" },
-    "save_format": { title: "保存格式", desc: "source 按上游真实格式保存；png 会在本地真实转码为 PNG，文件更大。" }
+    "blocked_parallel_attempts": { title: "拦截补偿并发次数", desc: "疑似审查/拦截导致无最终图时，自动并行补偿生成次数。" }
   },
 
 
@@ -509,12 +508,6 @@ function buildFieldCard(section, key, val) {
     built = buildSelectInput(section, key, val, [
       { val: 'single', text: 'single' },
       { val: 'complete', text: 'complete' }
-    ]);
-  }
-  else if (section === 'image' && key === 'save_format') {
-    built = buildSelectInput(section, key, val, [
-      { val: 'source', text: 'source (原格式)' },
-      { val: 'png', text: 'png (统一 PNG)' }
     ]);
   }
   else if (section === 'imagine_fast' && key === 'size') {

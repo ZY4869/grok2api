@@ -447,7 +447,6 @@ curl http://localhost:8000/v1/videos \
 |  | `final_min_bytes` | 最终图最小字节 | 判定最终图的最小字节数（通常 JPG > 100KB）。 | `100000` |
 |  | `blocked_parallel_attempts` | 并行补偿次数 | 遇到疑似审查/拦截时的并行补偿生成次数。 | `5` |
 |  | `blocked_parallel_enabled` | 并行补偿开关 | 是否启用并行补偿（启用时优先使用不同 token）。 | `true` |
-|  | `save_format` | 图片落盘格式 | `source` 按上游真实格式保存；`png` 会真实转码为 PNG，文件更大。 | `source` |
 | **imagine_fast** | `n` | 生成数量 | 仅对 grok-imagine-1.0-fast 生效。 | `1` |
 |  | `size` | 图片尺寸 | `1280x720` / `720x1280` / `1792x1024` / `1024x1792` / `1024x1024` | `1024x1024` |
 |  | `response_format` | 响应格式 | `url` / `b64_json` / `base64` | `url` |
