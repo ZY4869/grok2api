@@ -9,7 +9,6 @@ from fastapi.responses import FileResponse
 
 from app.core.logger import logger
 from app.core.storage import DATA_DIR
-from app.services.grok.utils.video_assets import VideoAssetService
 
 router = APIRouter(tags=["Files"])
 
@@ -24,8 +23,8 @@ async def get_image(filename: str):
     """
     获取图片文件
     """
-    if "/" in filename or "\\" in filename:
-        filename = filename.replace("/", "-").replace("\\", "-")
+    if "/" in filename:
+        filename = filename.replace("/", "-")
 
     file_path = IMAGE_DIR / filename
 
@@ -56,12 +55,13 @@ async def get_video(filename: str):
     if "/" in filename:
         filename = filename.replace("/", "-")
 
-    file_path = VideoAssetService.resolve_file_path(filename)
-    if file_path and await aiofiles.os.path.exists(file_path):
+    file_path = VIDEO_DIR / filename
+
+    if await aiofiles.os.path.exists(file_path):
         if await aiofiles.os.path.isfile(file_path):
             return FileResponse(
                 file_path,
-                media_type=VideoAssetService.media_type_for_path(Path(file_path)),
+                media_type="video/mp4",
                 headers={"Cache-Control": "public, max-age=31536000, immutable"},
             )
 

@@ -33,7 +33,6 @@ const NUMERIC_FIELDS = new Set([
   'blocked_parallel_attempts',
   'auto_check_interval_hours',
   'retention_days',
-  'local_retention_days',
   'concurrent',
   'batch_size'
 ]);
@@ -505,12 +504,6 @@ function buildFieldCard(section, key, val) {
       { val: 'url', text: 'URL' }
     ]);
   }
-  else if (section === 'video' && key === 'delivery_mode_default') {
-    built = buildSelectInput(section, key, val, [
-      { val: 'url', text: 'URL' },
-      { val: 'file', text: 'FILE' }
-    ]);
-  }
   else if (section === 'video' && key === 'upscale_timing') {
     built = buildSelectInput(section, key, val, [
       { val: 'single', text: 'single' },
@@ -683,12 +676,6 @@ async function copyToClipboard(text, btn) {
 window.onload = init;
 
 Object.assign(LOCALE_MAP, {
-  video: {
-    ...(LOCALE_MAP.video || {}),
-    local_persist_enabled: { title: "本地持久化", desc: "是否将生成完成的视频保存到 VPS 本地磁盘。" },
-    local_retention_days: { title: "本地保留天数", desc: "本地持久化视频的自动清理天数，0 表示不按天数自动清理。" },
-    delivery_mode_default: { title: "默认回传方式", desc: "url 返回下载地址，file 直接回传视频文件。" }
-  },
   account: {
     label: "账号检测",
     auto_check_enabled: { title: "启用定时检测", desc: "定时检测所有账号可用性。" },

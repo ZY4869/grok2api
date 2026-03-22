@@ -352,12 +352,6 @@ curl http://localhost:8000/v1/videos \
   }'
 ```
 
-> New in local persistence mode:
-> - `delivery_mode: "url" | "file"` is supported on `/v1/videos` and `/v1/video/extend`
-> - `file` requires `video.local_persist_enabled = true`
-> - when local persistence succeeds, `url` mode returns the local `/v1/files/video/...` link
-> - `url` mode also adds `storage` and `expires_at`; `file` mode returns `video/mp4` and includes `X-Video-Local-Url` / `X-Video-Expires-At`
-
 <details>
 <summary>支持的请求参数</summary>
 
@@ -479,13 +473,6 @@ curl http://localhost:8000/v1/videos \
 |  | `timeout` | 请求超时 | 用量查询接口的超时时间（秒）。 | `60` |
 
 <br>
-
-### Video persistence options
-
-- `video.local_persist_enabled = false`: enable persistent local storage under `DATA_DIR/media/video`
-- `video.local_retention_days = 7`: automatic cleanup window in days, `0` disables day-based cleanup
-- `video.delivery_mode_default = "url"`: default API delivery mode for `/v1/videos` and `/v1/video/extend`
-- request-level `delivery_mode` overrides the default config
 
 ## 致谢
 

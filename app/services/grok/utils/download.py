@@ -21,7 +21,6 @@ from app.core.exceptions import AppException
 from app.services.reverse.assets_download import AssetsDownloadReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.locks import _get_download_semaphore, _file_lock
-from app.services.grok.utils.video_assets import VideoAssetService
 
 
 class DownloadService:
@@ -101,13 +100,7 @@ class DownloadService:
         fmt = fmt.lower() if isinstance(fmt, str) else "url"
         if fmt not in ("url", "markdown", "html"):
             fmt = "url"
-        if VideoAssetService.is_local_video_url(video_url):
-            final_video_url = video_url
-        elif VideoAssetService.local_persist_enabled():
-            delivery = await VideoAssetService.prepare_delivery(video_url, token, "url")
-            final_video_url = delivery.url
-        else:
-            final_video_url = await self.resolve_url(video_url, token, "video")
+        final_video_url = await self.resolve_url(video_url, token, "video")
         final_thumb_url = ""
         if thumbnail_url:
             final_thumb_url = await self.resolve_url(thumbnail_url, token, "image")
