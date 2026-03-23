@@ -6,17 +6,25 @@ import orjson
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
 from curl_cffi.requests import AsyncSession
 
-from app.core.logger import logger
 from app.core.config import get_config
-from app.core.proxy_pool import get_current_proxy_from, rotate_proxy, should_rotate_proxy
 from app.core.exceptions import UpstreamException
-from app.services.token.service import TokenService
+from app.core.logger import logger
+from app.core.proxy_pool import (
+    get_current_proxy_from,
+    rotate_proxy,
+    should_rotate_proxy,
+)
 from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import extract_status_for_retry, retry_on_status
+from app.services.token.service import TokenService
 
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
+APP_CHAT_REQUEST_MODE_ID = "mode_id"
+APP_CHAT_REQUEST_LEGACY_MODEL = "legacy_model"
+APP_CHAT_REQUEST_MODEL_ID_AUTO = "model_id_auto"
 
 
 def _merge_request_overrides(
@@ -48,6 +56,17 @@ def _normalize_chat_proxy(proxy_url: str) -> str:
     return proxy_url
 
 
+def _resolve_request_strategy(
+    use_mode_id: bool, request_strategy: Optional[str]
+) -> str:
+    """Resolve the upstream request shape for app-chat."""
+    if request_strategy:
+        return request_strategy
+    if use_mode_id:
+        return APP_CHAT_REQUEST_MODE_ID
+    return APP_CHAT_REQUEST_LEGACY_MODEL
+
+
 class AppChatReverse:
     """/rest/app-chat/conversations/new reverse interface."""
 
@@ -73,10 +92,12 @@ class AppChatReverse:
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
+        request_strategy: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build chat payload for Grok app-chat API."""
 
         attachments = file_attachments or []
+        strategy = _resolve_request_strategy(use_mode_id, request_strategy)
 
         payload = {
             "deviceEnvInfo": {
@@ -109,13 +130,15 @@ class AppChatReverse:
             "toolOverrides": {},
         }
 
-        if use_mode_id:
-            # 快捷模式：使用 modeId 方式（与 Grok 网页一致）
+        if strategy == APP_CHAT_REQUEST_MODE_ID:
             payload["modeId"] = mode
             payload["enable420"] = False
             payload["responseMetadata"] = {}
+        elif strategy == APP_CHAT_REQUEST_MODEL_ID_AUTO:
+            payload["responseMetadata"] = {
+                "requestModelDetails": {"modelId": "auto"},
+            }
         else:
-            # 旧接口：使用 modelName + modelMode 方式（图片/视频模型）
             payload["modelName"] = model
             payload["modelMode"] = mode
             payload["responseMetadata"] = {
@@ -130,10 +153,14 @@ class AppChatReverse:
         payload["toolOverrides"] = tool_overrides or {}
 
         if model_config_override:
+            payload.setdefault("responseMetadata", {})
             payload["responseMetadata"]["modelConfigOverride"] = model_config_override
 
         import json
-        logger.debug(f"AppChatReverse payload: {json.dumps(payload, indent=4, ensure_ascii=False)}")
+
+        logger.debug(
+            f"AppChatReverse payload: {json.dumps(payload, indent=4, ensure_ascii=False)}"
+        )
 
         return payload
 
@@ -149,26 +176,10 @@ class AppChatReverse:
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
+        request_strategy: Optional[str] = None,
     ) -> Any:
-        """Send app chat request to Grok.
-
-        Args:
-            session: AsyncSession, the session to use for the request.
-            token: str, the SSO token.
-            message: str, the message to send.
-            model: str, the model to use.
-            mode: str, the mode to use.
-            file_attachments: List[str], the file attachments to send.
-            request_overrides: Dict[str, Any], request-level payload overrides.
-            tool_overrides: Dict[str, Any], the tool overrides to use.
-            model_config_override: Dict[str, Any], the model config override to use.
-            use_mode_id: bool, use modeId-based request format.
-
-        Returns:
-            Any: The response from the request.
-        """
+        """Send app chat request to Grok."""
         try:
-            # Build headers
             headers = build_headers(
                 cookie_token=token,
                 content_type="application/json",
@@ -176,7 +187,6 @@ class AppChatReverse:
                 referer="https://grok.com/",
             )
 
-            # Build payload
             payload = AppChatReverse.build_payload(
                 message=message,
                 model=model,
@@ -186,14 +196,22 @@ class AppChatReverse:
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
                 use_mode_id=use_mode_id,
+                request_strategy=request_strategy,
+            )
+            request_model_details = (payload.get("responseMetadata") or {}).get(
+                "requestModelDetails", {}
             )
             payload_summary = {
                 "model": payload.get("modelName"),
                 "mode": payload.get("modelMode"),
                 "mode_id": payload.get("modeId"),
+                "request_strategy": _resolve_request_strategy(
+                    use_mode_id, request_strategy
+                ),
+                "request_model_id": request_model_details.get("modelId"),
                 "image_generation_count": payload.get("imageGenerationCount"),
                 "enable_nsfw": payload.get("enableNsfw"),
-                "message_len": payload.get("message") or "",
+                "message_len": len(payload.get("message") or ""),
                 "file_attachments": len(payload.get("fileAttachments") or []),
                 "custom_personality_len": len(payload.get("customPersonality") or ""),
             }
@@ -202,7 +220,6 @@ class AppChatReverse:
                 extra={"grok_payload": payload_summary},
             )
 
-            # Curl Config
             timeout = float(get_config("chat.timeout") or 0)
             if timeout <= 0:
                 timeout = max(
@@ -214,17 +231,21 @@ class AppChatReverse:
 
             async def _do_request():
                 nonlocal active_proxy_key
-                active_proxy_key, base_proxy = get_current_proxy_from("proxy.base_proxy_url")
+                active_proxy_key, base_proxy = get_current_proxy_from(
+                    "proxy.base_proxy_url"
+                )
                 proxy = None
                 proxies = None
                 if base_proxy:
                     normalized_proxy = _normalize_chat_proxy(base_proxy)
                     scheme = urlparse(normalized_proxy).scheme.lower()
                     if scheme.startswith("socks"):
-                        # curl_cffi 对 SOCKS 代理优先使用 proxy 参数，避免被按 HTTP CONNECT 处理
                         proxy = normalized_proxy
                     else:
-                        proxies = {"http": normalized_proxy, "https": normalized_proxy}
+                        proxies = {
+                            "http": normalized_proxy,
+                            "https": normalized_proxy,
+                        }
                     logger.info(
                         f"AppChatReverse proxy enabled: scheme={scheme}, target={normalized_proxy}"
                     )
@@ -244,8 +265,6 @@ class AppChatReverse:
                 )
 
                 if response.status_code != 200:
-
-                    # Get response content
                     content = ""
                     try:
                         content = await response.text()
@@ -273,7 +292,9 @@ class AppChatReverse:
                     return None
                 return status
 
-            async def _on_retry(attempt: int, status_code: int, error: Exception, delay: float):
+            async def _on_retry(
+                attempt: int, status_code: int, error: Exception, delay: float
+            ):
                 if active_proxy_key and should_rotate_proxy(status_code):
                     rotate_proxy(active_proxy_key)
 
@@ -283,7 +304,6 @@ class AppChatReverse:
                 on_retry=_on_retry,
             )
 
-            # Stream response
             async def stream_response():
                 try:
                     async for line in response.aiter_lines():
@@ -294,9 +314,7 @@ class AppChatReverse:
             return stream_response()
 
         except Exception as e:
-            # Handle upstream exception
             if isinstance(e, UpstreamException):
-                status = None
                 if e.details and "status" in e.details:
                     status = e.details["status"]
                 else:
@@ -310,7 +328,6 @@ class AppChatReverse:
                         pass
                 raise
 
-            # Handle other non-upstream exceptions
             logger.error(
                 f"AppChatReverse: Chat failed, {str(e)}",
                 extra={"error_type": type(e).__name__},
@@ -321,4 +338,9 @@ class AppChatReverse:
             )
 
 
-__all__ = ["AppChatReverse"]
+__all__ = [
+    "APP_CHAT_REQUEST_LEGACY_MODEL",
+    "APP_CHAT_REQUEST_MODEL_ID_AUTO",
+    "APP_CHAT_REQUEST_MODE_ID",
+    "AppChatReverse",
+]

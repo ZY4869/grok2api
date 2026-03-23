@@ -268,13 +268,14 @@ class GrokChatService:
         tool_overrides: Dict[str, Any] = None,
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
+        request_strategy: str | None = None,
     ):
         """发送聊天请求"""
         if stream is None:
             stream = get_config("app.stream")
 
         logger.debug(
-            f"Chat request: model={model}, mode={mode}, stream={stream}, use_mode_id={use_mode_id}, attachments={len(file_attachments or [])}"
+            f"Chat request: model={model}, mode={mode}, stream={stream}, use_mode_id={use_mode_id}, request_strategy={request_strategy}, attachments={len(file_attachments or [])}"
         )
 
         browser = get_config("proxy.browser")
@@ -293,6 +294,7 @@ class GrokChatService:
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
                 use_mode_id=use_mode_id,
+                request_strategy=request_strategy,
             )
             logger.info(f"Chat connected: model={model}, stream={stream}")
         except Exception:

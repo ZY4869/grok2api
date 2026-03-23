@@ -26,10 +26,18 @@ from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
+from app.services.reverse.app_chat import (
+    APP_CHAT_REQUEST_LEGACY_MODEL,
+    APP_CHAT_REQUEST_MODEL_ID_AUTO,
+)
 from app.services.reverse.ws_imagine import ImagineWebSocketReverse
 
 
 image_service = ImagineWebSocketReverse()
+APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
+    APP_CHAT_REQUEST_MODEL_ID_AUTO,
+    APP_CHAT_REQUEST_LEGACY_MODEL,
+)
 
 
 @dataclass
@@ -256,59 +264,98 @@ class ImageGenerationService:
         chat_format: bool = False,
     ) -> ImageGenerationResult:
         async def _combined() -> AsyncGenerator[str, None]:
-            saw_valid_chunk = False
-            buffered_chunks: List[str] = []
+            last_error: Exception | None = None
 
-            try:
-                app_chat_result = await self._stream_app_chat(
-                    token=token,
-                    model_info=model_info,
-                    prompt=prompt,
-                    n=n,
-                    response_format=response_format,
-                    size=size,
-                    aspect_ratio=aspect_ratio,
-                    enable_nsfw=enable_nsfw,
-                    chat_format=chat_format,
+            for request_strategy in APP_CHAT_IMAGE_REQUEST_STRATEGIES:
+                logger.info(
+                    "Trying app-chat image stream request strategy",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "model_id": model_info.model_id,
+                    },
                 )
-                async for chunk in app_chat_result.data:
-                    is_valid = self._is_meaningful_stream_chunk(
-                        chunk, response_format, chat_format
+                saw_valid_chunk = False
+                buffered_chunks: List[str] = []
+
+                try:
+                    app_chat_result = await self._stream_app_chat(
+                        token=token,
+                        model_info=model_info,
+                        prompt=prompt,
+                        n=n,
+                        response_format=response_format,
+                        size=size,
+                        aspect_ratio=aspect_ratio,
+                        enable_nsfw=enable_nsfw,
+                        chat_format=chat_format,
+                        request_strategy=request_strategy,
                     )
-                    if chat_format and not saw_valid_chunk:
+                    async for chunk in app_chat_result.data:
+                        is_valid = self._is_meaningful_stream_chunk(
+                            chunk, response_format, chat_format
+                        )
+                        if chat_format and not saw_valid_chunk:
+                            if is_valid:
+                                saw_valid_chunk = True
+                                for pending in buffered_chunks:
+                                    yield pending
+                                buffered_chunks.clear()
+                                yield chunk
+                            else:
+                                buffered_chunks.append(chunk)
+                            continue
+
                         if is_valid:
                             saw_valid_chunk = True
-                            for pending in buffered_chunks:
-                                yield pending
-                            buffered_chunks.clear()
-                            yield chunk
-                        else:
-                            buffered_chunks.append(chunk)
-                        continue
+                        yield chunk
 
-                    if is_valid:
-                        saw_valid_chunk = True
-                    yield chunk
+                    if saw_valid_chunk:
+                        return
 
-                if saw_valid_chunk:
-                    return
+                    logger.warning(
+                        "App-chat image stream completed without final image",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                        },
+                    )
+                except UpstreamException as e:
+                    last_error = e
+                    if saw_valid_chunk or rate_limited(e):
+                        raise
+                    logger.warning(
+                        "App-chat image stream failed before first image chunk",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                            "error": str(e),
+                        },
+                    )
+                except Exception as e:
+                    last_error = e
+                    if saw_valid_chunk:
+                        raise
+                    logger.warning(
+                        "App-chat image stream failed before first image chunk",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                            "error": str(e),
+                        },
+                    )
 
-                logger.warning(
-                    "App-chat image stream completed without final image, falling back to ws"
-                )
-            except UpstreamException as e:
-                if saw_valid_chunk or rate_limited(e):
-                    raise
-                logger.warning(
-                    f"App-chat image stream failed before first image chunk, falling back to ws: {e}"
-                )
-            except Exception as e:
-                if saw_valid_chunk:
-                    raise
-                logger.warning(
-                    f"App-chat image stream failed before first image chunk, falling back to ws: {e}"
-                )
-
+            logger.warning(
+                "App-chat image stream exhausted, falling back to ws",
+                extra={
+                    "image_protocol_strategy": "ws_fallback",
+                    "fallback_stage": "ws_fallback",
+                    "model_id": model_info.model_id,
+                    "error": str(last_error) if last_error else "",
+                },
+            )
             ws_result = await self._stream_ws(
                 token=token,
                 model_info=model_info,
@@ -337,6 +384,7 @@ class ImageGenerationService:
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
         chat_format: bool = False,
+        request_strategy: str = APP_CHAT_REQUEST_MODEL_ID_AUTO,
     ) -> ImageGenerationResult:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
@@ -350,6 +398,7 @@ class ImageGenerationService:
             request_overrides=self._build_request_overrides(n, enable_nsfw),
             tool_overrides={"imageGen": True},
             use_mode_id=model_info.use_mode_id,
+            request_strategy=request_strategy,
         )
         processor = AppChatImageStreamProcessor(
             model_info.model_id,
@@ -416,33 +465,79 @@ class ImageGenerationService:
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
     ) -> ImageGenerationResult:
-        try:
-            images = await self._collect_app_chat(
-                token=token,
-                model_info=model_info,
-                prompt=prompt,
-                n=n,
-                response_format=response_format,
-                enable_nsfw=enable_nsfw,
+        last_error: Exception | None = None
+
+        for request_strategy in APP_CHAT_IMAGE_REQUEST_STRATEGIES:
+            logger.info(
+                "Trying app-chat image collect request strategy",
+                extra={
+                    "image_protocol_strategy": request_strategy,
+                    "model_id": model_info.model_id,
+                },
             )
-            if len(images) >= n:
-                return await self._finalize_collect_result(
-                    token_mgr=token_mgr,
+            try:
+                images = await self._collect_app_chat(
                     token=token,
                     model_info=model_info,
-                    images=images,
+                    prompt=prompt,
                     n=n,
+                    response_format=response_format,
+                    enable_nsfw=enable_nsfw,
+                    request_strategy=request_strategy,
+                )
+                if len(images) >= n:
+                    return await self._finalize_collect_result(
+                        token_mgr=token_mgr,
+                        token=token,
+                        model_info=model_info,
+                        images=images,
+                        n=n,
+                    )
+
+                logger.warning(
+                    "App-chat image collect returned fewer images than requested",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                        "final_images": len(images),
+                        "requested": n,
+                    },
+                )
+            except UpstreamException as e:
+                last_error = e
+                if rate_limited(e):
+                    raise
+                logger.warning(
+                    "App-chat image collect failed before final image",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                        "error": str(e),
+                    },
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "App-chat image collect failed before final image",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                        "error": str(e),
+                    },
                 )
 
-            logger.warning(
-                f"App-chat image collect returned {len(images)}/{n} images, falling back to ws"
-            )
-        except UpstreamException as e:
-            if rate_limited(e):
-                raise
-            logger.warning(f"App-chat image collect failed, falling back to ws: {e}")
-        except Exception as e:
-            logger.warning(f"App-chat image collect failed, falling back to ws: {e}")
+        logger.warning(
+            "App-chat image collect exhausted, falling back to ws",
+            extra={
+                "image_protocol_strategy": "ws_fallback",
+                "fallback_stage": "ws_fallback",
+                "model_id": model_info.model_id,
+                "error": str(last_error) if last_error else "",
+            },
+        )
 
         return await self._collect_ws(
             token_mgr=token_mgr,
@@ -465,6 +560,7 @@ class ImageGenerationService:
         n: int,
         response_format: str,
         enable_nsfw: Optional[bool] = None,
+        request_strategy: str = APP_CHAT_REQUEST_MODEL_ID_AUTO,
     ) -> List[str]:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
@@ -478,6 +574,7 @@ class ImageGenerationService:
             request_overrides=self._build_request_overrides(n, enable_nsfw),
             tool_overrides={"imageGen": True},
             use_mode_id=model_info.use_mode_id,
+            request_strategy=request_strategy,
         )
         processor = AppChatImageCollectProcessor(
             model_info.model_id,

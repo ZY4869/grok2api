@@ -23,10 +23,10 @@ from app.core.exceptions import (
 from app.core.logger import logger
 from app.services.grok.utils.process import (
     BaseProcessor,
-    _with_idle_timeout,
-    _normalize_line,
-    _collect_images,
     _is_http2_error,
+    _collect_image_references,
+    _normalize_line,
+    _with_idle_timeout,
 )
 from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils.retry import pick_token, rate_limited
@@ -35,6 +35,16 @@ from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.video import VideoService
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
+from app.services.reverse.app_chat import (
+    APP_CHAT_REQUEST_LEGACY_MODEL,
+    APP_CHAT_REQUEST_MODEL_ID_AUTO,
+)
+
+
+APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
+    APP_CHAT_REQUEST_MODEL_ID_AUTO,
+    APP_CHAT_REQUEST_LEGACY_MODEL,
+)
 
 
 @dataclass
@@ -108,26 +118,19 @@ class ImageEditService:
                 tool_overrides = {"imageGen": True}
 
                 if stream:
-                    response = await GrokChatService().chat(
-                        token=current_token,
-                        message=prompt,
-                        model=model_info.grok_model,
-                        mode=None,
-                        stream=True,
-                        tool_overrides=tool_overrides,
-                        model_config_override=model_config_override,
-                    )
-                    processor = ImageStreamProcessor(
-                        model_info.model_id,
-                        current_token,
-                        n=n,
-                        response_format=response_format,
-                        chat_format=chat_format,
-                    )
                     return ImageEditResult(
                         stream=True,
                         data=wrap_stream_with_usage(
-                            processor.process(response),
+                            self._stream_with_fallback(
+                                token=current_token,
+                                prompt=prompt,
+                                model_info=model_info,
+                                n=n,
+                                response_format=response_format,
+                                tool_overrides=tool_overrides,
+                                model_config_override=model_config_override,
+                                chat_format=chat_format,
+                            ),
                             token_mgr,
                             current_token,
                             model_info.model_id,
@@ -228,6 +231,161 @@ class ImageEditService:
 
         return parent_post_id or ""
 
+    @staticmethod
+    def _parse_sse_chunk(chunk: str) -> tuple[str, Any]:
+        event = ""
+        data_lines: List[str] = []
+        for line in (chunk or "").splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].lstrip())
+
+        if not data_lines:
+            return event, None
+
+        raw = "\n".join(data_lines).strip()
+        if raw == "[DONE]":
+            return event, raw
+
+        try:
+            return event, orjson.loads(raw)
+        except orjson.JSONDecodeError:
+            return event, raw
+
+    @classmethod
+    def _is_meaningful_stream_chunk(
+        cls, chunk: str, response_format: str, chat_format: bool
+    ) -> bool:
+        event, payload = cls._parse_sse_chunk(chunk)
+        if chat_format:
+            if event != "chat.completion.chunk" or not isinstance(payload, dict):
+                return False
+            for choice in payload.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if isinstance(content, str) and content.strip():
+                    return True
+            return False
+
+        if event != "image_generation.completed" or not isinstance(payload, dict):
+            return False
+
+        field = "url" if response_format == "url" else "b64_json"
+        value = payload.get(field)
+        return isinstance(value, str) and bool(value.strip())
+
+    async def _stream_with_fallback(
+        self,
+        *,
+        token: str,
+        prompt: str,
+        model_info: Any,
+        n: int,
+        response_format: str,
+        tool_overrides: dict,
+        model_config_override: dict,
+        chat_format: bool,
+    ) -> AsyncGenerator[str, None]:
+        last_error: Exception | None = None
+
+        for request_strategy in APP_CHAT_IMAGE_REQUEST_STRATEGIES:
+            logger.info(
+                "Trying app-chat image edit request strategy",
+                extra={
+                    "image_protocol_strategy": request_strategy,
+                    "model_id": model_info.model_id,
+                },
+            )
+            saw_valid_chunk = False
+            buffered_chunks: List[str] = []
+
+            try:
+                response = await GrokChatService().chat(
+                    token=token,
+                    message=prompt,
+                    model=model_info.grok_model,
+                    mode=None,
+                    stream=True,
+                    tool_overrides=tool_overrides,
+                    model_config_override=model_config_override,
+                    request_strategy=request_strategy,
+                )
+                processor = ImageStreamProcessor(
+                    model_info.model_id,
+                    token,
+                    n=n,
+                    response_format=response_format,
+                    chat_format=chat_format,
+                )
+
+                async for chunk in processor.process(response):
+                    is_valid = self._is_meaningful_stream_chunk(
+                        chunk, response_format, chat_format
+                    )
+                    if chat_format and not saw_valid_chunk:
+                        if is_valid:
+                            saw_valid_chunk = True
+                            for pending in buffered_chunks:
+                                yield pending
+                            buffered_chunks.clear()
+                            yield chunk
+                        else:
+                            buffered_chunks.append(chunk)
+                        continue
+
+                    if is_valid:
+                        saw_valid_chunk = True
+                    yield chunk
+
+                if saw_valid_chunk:
+                    return
+
+                logger.warning(
+                    "App-chat image edit stream completed without final image",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                    },
+                )
+            except UpstreamException as e:
+                last_error = e
+                if rate_limited(e):
+                    raise
+                if saw_valid_chunk:
+                    raise
+                logger.warning(
+                    "App-chat image edit stream failed before first image chunk",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                        "error": str(e),
+                    },
+                )
+            except Exception as e:
+                last_error = e
+                if saw_valid_chunk:
+                    raise
+                logger.warning(
+                    "App-chat image edit stream failed before first image chunk",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "fallback_stage": "app_chat_retry",
+                        "model_id": model_info.model_id,
+                        "error": str(e),
+                    },
+                )
+
+        if last_error:
+            raise last_error
+        raise UpstreamException(
+            "Image edit returned no results", details={"error": "empty_result"}
+        )
+
     async def _collect_images(
         self,
         *,
@@ -242,19 +400,68 @@ class ImageEditService:
         calls_needed = (n + 1) // 2
 
         async def _call_edit():
-            response = await GrokChatService().chat(
-                token=token,
-                message=prompt,
-                model=model_info.grok_model,
-                mode=None,
-                stream=True,
-                tool_overrides=tool_overrides,
-                model_config_override=model_config_override,
-            )
-            processor = ImageCollectProcessor(
-                model_info.model_id, token, response_format=response_format
-            )
-            return await processor.process(response)
+            last_error: Exception | None = None
+            for request_strategy in APP_CHAT_IMAGE_REQUEST_STRATEGIES:
+                logger.info(
+                    "Trying app-chat image edit collect request strategy",
+                    extra={
+                        "image_protocol_strategy": request_strategy,
+                        "model_id": model_info.model_id,
+                    },
+                )
+                try:
+                    response = await GrokChatService().chat(
+                        token=token,
+                        message=prompt,
+                        model=model_info.grok_model,
+                        mode=None,
+                        stream=True,
+                        tool_overrides=tool_overrides,
+                        model_config_override=model_config_override,
+                        request_strategy=request_strategy,
+                    )
+                    processor = ImageCollectProcessor(
+                        model_info.model_id, token, response_format=response_format
+                    )
+                    images = await processor.process(response)
+                    if images:
+                        return images
+                    logger.warning(
+                        "App-chat image edit collect returned no images",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                        },
+                    )
+                except UpstreamException as e:
+                    last_error = e
+                    if rate_limited(e):
+                        raise
+                    logger.warning(
+                        "App-chat image edit collect failed before final image",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                            "error": str(e),
+                        },
+                    )
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        "App-chat image edit collect failed before final image",
+                        extra={
+                            "image_protocol_strategy": request_strategy,
+                            "fallback_stage": "app_chat_retry",
+                            "model_id": model_info.model_id,
+                            "error": str(e),
+                        },
+                    )
+
+            if last_error:
+                raise last_error
+            return []
 
         last_error: Exception | None = None
         rate_limit_error: Exception | None = None
@@ -318,11 +525,28 @@ class ImageStreamProcessor(BaseProcessor):
         """Build SSE response."""
         return f"event: {event}\ndata: {orjson.dumps(data).decode()}\n\n"
 
+    async def _resolve_image_output(self, ref_url: str) -> str:
+        if self.response_format == "url":
+            return await self.process_url(ref_url, "image")
+        try:
+            dl_service = self._get_dl()
+            base64_data = await dl_service.parse_b64(ref_url, self.token, "image")
+            if base64_data:
+                if "," in base64_data:
+                    return base64_data.split(",", 1)[1]
+                return base64_data
+        except Exception as e:
+            logger.warning(
+                f"Failed to convert image to base64, falling back to URL: {e}"
+            )
+        return await self.process_url(ref_url, "image")
+
     async def process(
         self, response: AsyncIterable[bytes]
     ) -> AsyncGenerator[str, None]:
         """Process stream response."""
         final_images = []
+        seen_outputs = set()
         emitted_chat_chunk = False
         idle_timeout = get_config("image.stream_timeout")
 
@@ -360,33 +584,22 @@ class ImageStreamProcessor(BaseProcessor):
                         )
                     continue
 
-                # modelResponse
-                if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    final_images.append(processed)
-                                continue
-                            try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    final_images.append(b64)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
-                                )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    final_images.append(processed)
+                refs = _collect_image_references(resp)
+                if refs:
+                    logger.debug(
+                        "Image edit stream parsed upstream images",
+                        extra={
+                            "image_response_shape": ",".join(
+                                sorted({ref.source_shape for ref in refs})
+                            ),
+                            "model_id": self.model,
+                        },
+                    )
+                    for ref in refs:
+                        output = await self._resolve_image_output(ref.url)
+                        if output and output not in seen_outputs:
+                            seen_outputs.add(output)
+                            final_images.append(output)
                     continue
 
             for index, img_data in enumerate(final_images):
@@ -500,9 +713,26 @@ class ImageCollectProcessor(BaseProcessor):
         super().__init__(model, token)
         self.response_format = response_format
 
+    async def _resolve_image_output(self, ref_url: str) -> str:
+        if self.response_format == "url":
+            return await self.process_url(ref_url, "image")
+        try:
+            dl_service = self._get_dl()
+            base64_data = await dl_service.parse_b64(ref_url, self.token, "image")
+            if base64_data:
+                if "," in base64_data:
+                    return base64_data.split(",", 1)[1]
+                return base64_data
+        except Exception as e:
+            logger.warning(
+                f"Failed to convert image to base64, falling back to URL: {e}"
+            )
+        return await self.process_url(ref_url, "image")
+
     async def process(self, response: AsyncIterable[bytes]) -> List[str]:
         """Process and collect images."""
         images = []
+        seen_outputs = set()
         idle_timeout = get_config("image.stream_timeout")
 
         try:
@@ -517,32 +747,22 @@ class ImageCollectProcessor(BaseProcessor):
 
                 resp = data.get("result", {}).get("response", {})
 
-                if mr := resp.get("modelResponse"):
-                    if urls := _collect_images(mr):
-                        for url in urls:
-                            if self.response_format == "url":
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    images.append(processed)
-                                continue
-                            try:
-                                dl_service = self._get_dl()
-                                base64_data = await dl_service.parse_b64(
-                                    url, self.token, "image"
-                                )
-                                if base64_data:
-                                    if "," in base64_data:
-                                        b64 = base64_data.split(",", 1)[1]
-                                    else:
-                                        b64 = base64_data
-                                    images.append(b64)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to convert image to base64, falling back to URL: {e}"
-                                )
-                                processed = await self.process_url(url, "image")
-                                if processed:
-                                    images.append(processed)
+                refs = _collect_image_references(resp)
+                if refs:
+                    logger.debug(
+                        "Image edit collect parsed upstream images",
+                        extra={
+                            "image_response_shape": ",".join(
+                                sorted({ref.source_shape for ref in refs})
+                            ),
+                            "model_id": self.model,
+                        },
+                    )
+                    for ref in refs:
+                        output = await self._resolve_image_output(ref.url)
+                        if output and output not in seen_outputs:
+                            seen_outputs.add(output)
+                            images.append(output)
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")

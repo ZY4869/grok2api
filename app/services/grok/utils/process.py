@@ -1,28 +1,53 @@
 """
-响应处理器基类和通用工具
+Shared processors and response helpers.
 """
 
 import asyncio
 import time
-from typing import Any, AsyncGenerator, Optional, AsyncIterable, List, TypeVar
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator, AsyncIterable, List, Optional, TypeVar
+
+import orjson
 
 from app.core.config import get_config
-from app.core.logger import logger
 from app.core.exceptions import StreamIdleTimeoutError
+from app.core.logger import logger
 from app.services.grok.utils.download import DownloadService
-
 
 T = TypeVar("T")
 
+_LEGACY_IMAGE_KEYS = {"generatedImageUrls", "imageUrls", "imageURLs"}
+_IMAGE_CHUNK_URL_KEYS = {
+    "assetUrl",
+    "asset_url",
+    "downloadUrl",
+    "download_url",
+    "imageUrl",
+    "image_url",
+    "original",
+    "signedUrl",
+    "signed_url",
+    "src",
+    "url",
+}
+_IMAGE_CARD_TYPES = {"render_generated_image", "render_edited_image"}
+
+
+@dataclass(frozen=True)
+class ImageReference:
+    url: str
+    source_shape: str
+    card_type: str = ""
+
 
 def _is_http2_error(e: Exception) -> bool:
-    """检查是否为 HTTP/2 流错误"""
+    """Detect whether the exception is related to an HTTP/2 stream error."""
     err_str = str(e).lower()
     return "http/2" in err_str or "curl: (92)" in err_str or "stream" in err_str
 
 
 def _normalize_line(line: Any) -> Optional[str]:
-    """规范化流式响应行，兼容 SSE data 前缀与空行"""
+    """Normalize an SSE line and drop empty or done sentinels."""
     if line is None:
         return None
     if isinstance(line, (bytes, bytearray)):
@@ -39,47 +64,162 @@ def _normalize_line(line: Any) -> Optional[str]:
     return text
 
 
-def _collect_images(obj: Any) -> List[str]:
-    """递归收集响应中的图片 URL"""
-    urls: List[str] = []
-    seen = set()
+def _maybe_parse_json(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text[:1] not in {"{", "["}:
+            return None
+        try:
+            return orjson.loads(text)
+        except orjson.JSONDecodeError:
+            return None
+    return value
 
-    def add(url: str):
-        if not url or url in seen:
+
+def _looks_like_image_ref(value: str) -> bool:
+    text = (value or "").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return False
+    if text.startswith(("http://", "https://", "/")):
+        return True
+    return "assets.grok.com" in text
+
+
+def _collect_image_chunk_urls(
+    value: Any,
+    *,
+    add_ref,
+    card_type: str,
+) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _LEGACY_IMAGE_KEYS:
+                _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+                continue
+            if key in _IMAGE_CHUNK_URL_KEYS:
+                if isinstance(item, list):
+                    for url in item:
+                        if isinstance(url, str):
+                            add_ref(url, "card_image_chunk", card_type)
+                elif isinstance(item, str):
+                    add_ref(item, "card_image_chunk", card_type)
+            _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+        return
+
+    if isinstance(value, str) and _looks_like_image_ref(value):
+        add_ref(value, "card_image_chunk", card_type)
+
+
+def _collect_card_images(card: Any, *, add_ref) -> None:
+    payload = _maybe_parse_json(card)
+    if not isinstance(payload, dict):
+        return
+
+    json_data = _maybe_parse_json(payload.get("jsonData", payload))
+    if not isinstance(json_data, dict):
+        json_data = payload
+
+    card_type = str(json_data.get("type") or payload.get("type") or "").strip()
+
+    image = json_data.get("image") or payload.get("image") or {}
+    if isinstance(image, dict):
+        original = image.get("original")
+        if isinstance(original, str):
+            add_ref(original, "card_image_original", card_type or "legacy")
+
+    if card_type in _IMAGE_CARD_TYPES:
+        _collect_image_chunk_urls(
+            json_data.get("image_chunk"),
+            add_ref=add_ref,
+            card_type=card_type,
+        )
+
+
+def _collect_image_references(obj: Any) -> List[ImageReference]:
+    """Collect image references from both legacy and new app-chat response shapes."""
+    refs: List[ImageReference] = []
+    seen: set[str] = set()
+
+    def add_ref(url: str, source_shape: str, card_type: str = "") -> None:
+        text = (url or "").strip()
+        if not _looks_like_image_ref(text) or text in seen:
             return
-        seen.add(url)
-        urls.append(url)
+        seen.add(text)
+        refs.append(
+            ImageReference(
+                url=text,
+                source_shape=source_shape,
+                card_type=str(card_type or ""),
+            )
+        )
 
-    def walk(value: Any):
+    def walk_legacy(value: Any) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in {"generatedImageUrls", "imageUrls", "imageURLs"}:
+                if key in _LEGACY_IMAGE_KEYS:
                     if isinstance(item, list):
                         for url in item:
                             if isinstance(url, str):
-                                add(url)
+                                add_ref(url, "legacy_image_urls")
                     elif isinstance(item, str):
-                        add(item)
+                        add_ref(item, "legacy_image_urls")
                     continue
-                walk(item)
-        elif isinstance(value, list):
+                walk_legacy(item)
+            return
+        if isinstance(value, list):
             for item in value:
-                walk(item)
+                walk_legacy(item)
 
-    walk(obj)
-    return urls
+    def walk_cards(value: Any) -> None:
+        if isinstance(value, dict):
+            if any(
+                key in value
+                for key in ("cardAttachment", "cardAttachmentsJson", "jsonData", "image")
+            ):
+                _collect_card_images(value, add_ref=add_ref)
+            card = value.get("cardAttachment")
+            if card is not None:
+                _collect_card_images(card, add_ref=add_ref)
+            attachments = value.get("cardAttachmentsJson")
+            if isinstance(attachments, list):
+                for raw in attachments:
+                    parsed = _maybe_parse_json(raw)
+                    if parsed is not None:
+                        _collect_card_images(parsed, add_ref=add_ref)
+                        walk_cards(parsed)
+            for item in value.values():
+                walk_cards(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk_cards(item)
+
+    walk_legacy(obj)
+    walk_cards(obj)
+    return refs
+
+
+def _collect_images(obj: Any) -> List[str]:
+    """Backward-compatible image URL collector."""
+    return [ref.url for ref in _collect_image_references(obj)]
+
+
+def _collect_image_shapes(obj: Any) -> List[str]:
+    return sorted({ref.source_shape for ref in _collect_image_references(obj)})
 
 
 async def _with_idle_timeout(
     iterable: AsyncIterable[T], idle_timeout: float, model: str = ""
 ) -> AsyncGenerator[T, None]:
     """
-    包装异步迭代器，添加空闲超时检测
-
-    Args:
-        iterable: 原始异步迭代器
-        idle_timeout: 空闲超时时间(秒)，0 表示禁用
-        model: 模型名称(用于日志)
+    Wrap an async iterable and raise when it stays idle for too long.
     """
     if idle_timeout <= 0:
         async for item in iterable:
@@ -116,7 +256,7 @@ async def _with_idle_timeout(
 
 
 class BaseProcessor:
-    """基础处理器"""
+    """Shared processor base."""
 
     def __init__(self, model: str, token: str = ""):
         self.model = model
@@ -126,27 +266,30 @@ class BaseProcessor:
         self._dl_service: Optional[DownloadService] = None
 
     def _get_dl(self) -> DownloadService:
-        """获取下载服务实例（复用）"""
+        """Reuse a single downloader per processor."""
         if self._dl_service is None:
             self._dl_service = DownloadService()
         return self._dl_service
 
     async def close(self):
-        """释放下载服务资源"""
+        """Release downloader resources."""
         if self._dl_service:
             await self._dl_service.close()
             self._dl_service = None
 
     async def process_url(self, path: str, media_type: str = "image") -> str:
-        """处理资产 URL"""
+        """Resolve an asset path or URL into a public URL."""
         dl_service = self._get_dl()
         return await dl_service.resolve_url(path, self.token, media_type)
 
 
 __all__ = [
     "BaseProcessor",
-    "_with_idle_timeout",
-    "_normalize_line",
+    "ImageReference",
+    "_collect_image_references",
+    "_collect_image_shapes",
     "_collect_images",
     "_is_http2_error",
+    "_normalize_line",
+    "_with_idle_timeout",
 ]
