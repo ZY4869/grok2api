@@ -1,5 +1,5 @@
 (function (global) {
-  const VALID_POOLS = new Set(["ssoBasic", "ssoSuper"]);
+  const VALID_POOLS = new Set(["ssoBasic", "ssoSuper", "ssoHeavy"]);
   const TRUEISH = new Set(["1", "true", "yes", "on"]);
 
   function normalizeToken(value) {
@@ -469,6 +469,7 @@
         "token,pool,nsfw,email",
         "your_token_here,ssoBasic,yes,user1@example.com",
         "your_other_token,ssoSuper,no,user2@example.com",
+        "your_heavy_token,ssoHeavy,no,user3@example.com",
       ].join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);

@@ -46,11 +46,11 @@ docker compose up -d
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ZY4869/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ZY4869/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL,CALL_LOG_DB_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%2C%22CALL_LOG_DB_URL%22%3A%22%22%7D)
 
 > Set `DATA_DIR=/tmp/data` and disable file logs with `LOG_FILE_ENABLED=false`.
 >
-> For persistence, use MySQL / Redis / PostgreSQL and set `SERVER_STORAGE_TYPE` and `SERVER_STORAGE_URL`.
+> For persistence, use MySQL / Redis / PostgreSQL and set `SERVER_STORAGE_TYPE` and `SERVER_STORAGE_URL`. Set `CALL_LOG_DB_URL` as well if you want admin call logs stored separately or shared across Redis-backed instances.
 
 ### Render
 
@@ -58,7 +58,7 @@ docker compose up -d
 
 > Render free instances sleep after 15 minutes of inactivity; redeploy/restart will lose data.
 >
-> For persistence, use MySQL / Redis / PostgreSQL and set `SERVER_STORAGE_TYPE` and `SERVER_STORAGE_URL`.
+> For persistence, use MySQL / Redis / PostgreSQL and set `SERVER_STORAGE_TYPE` and `SERVER_STORAGE_URL`. Set `CALL_LOG_DB_URL` as well if you want admin call logs stored separately or shared across Redis-backed instances.
 
 <br>
 
@@ -93,6 +93,7 @@ docker compose up -d
 | `SERVER_WORKERS` | Server worker count | `1` | `2` |
 | `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
 | `SERVER_STORAGE_URL` | Storage DSN (optional for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+| `CALL_LOG_DB_URL` | Dedicated DSN for admin call logs; defaults to `SERVER_STORAGE_URL` for `mysql/pgsql`, otherwise `DATA_DIR/call_logs.db` | `""` | `sqlite:///./data/call_logs.db` |
 
 > MySQL example: `mysql+aiomysql://user:password@host:3306/db` (if you provide `mysql://`, it will be converted to `mysql+aiomysql://`).
 
@@ -116,7 +117,7 @@ docker compose up -d
 | `grok-auto` | grok-3/grok-4 | Auto chooses Fast or Expert | Basic/Super | Yes | Yes |
 | `grok-3-fast` | grok-3 | Quick responses | Basic/Super | Yes | Yes |
 | `grok-4-expert` | grok-4 | Thinks hard | Basic/Super | Yes | Yes |
-| `grok-4-heavy` | grok-4 | SuperGrok Heavy | Super | Yes | Yes |
+| `grok-4-heavy` | grok-4 | SuperGrok Heavy | SuperGrok Heavy | Yes | Yes |
 
 **Image / Video Models**
 

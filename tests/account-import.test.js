@@ -16,7 +16,7 @@ test("parseCsvText supports legacy two-column CSV", () => {
   const parsed = accountImport.parseCsvText([
     "token,pool",
     "token-1,ssoBasic",
-    "token-2,ssoSuper",
+    "token-2,ssoHeavy",
   ].join("\n"));
 
   assert.equal(parsed.entries.length, 2);
@@ -28,7 +28,7 @@ test("parseCsvText supports legacy two-column CSV", () => {
   });
   assert.deepEqual(parsed.entries[1], {
     token: "token-2",
-    pool: "ssoSuper",
+    pool: "ssoHeavy",
     nsfwRequested: false,
     email: "",
   });
@@ -51,10 +51,10 @@ test("parseCsvText supports nsfw and email columns", () => {
 test("resolveEntryPools falls back to the selected pool", () => {
   const entries = accountImport.resolveEntryPools(
     [{ token: "token-1", pool: "", nsfwRequested: false, email: "" }],
-    "ssoSuper"
+    "ssoHeavy"
   );
 
-  assert.equal(entries[0].pool, "ssoSuper");
+  assert.equal(entries[0].pool, "ssoHeavy");
 });
 
 test("mergeImportEntries lets CSV rows override manual entries", () => {

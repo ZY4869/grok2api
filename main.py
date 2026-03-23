@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi import Depends  # noqa: E402
 
 from app.core.auth import verify_api_key  # noqa: E402
+from app.core.call_log_store import CallLogStoreFactory, get_call_log_store  # noqa: E402
 from app.core.config import config, get_config  # noqa: E402
 from app.core.logger import logger, setup_logging  # noqa: E402
 from app.core.exceptions import register_exception_handlers  # noqa: E402
@@ -68,6 +69,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Grok2API...")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
+    try:
+        await get_call_log_store().prepare()
+    except Exception as exc:
+        logger.warning(f"Call log store prepare skipped: {exc}")
 
     # 4. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
@@ -113,6 +118,7 @@ async def lifespan(app: FastAPI):
 
     if StorageFactory._instance:
         await StorageFactory._instance.close()
+    await CallLogStoreFactory.close()
 
     if refresh_enabled:
         scheduler = get_scheduler()

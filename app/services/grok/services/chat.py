@@ -32,6 +32,10 @@ from app.services.grok.utils.tool_call import (
     parse_tool_call_block,
     format_tool_history,
 )
+from app.services.token.model_access import (
+    model_access_denied_error,
+    model_requires_special_subscription,
+)
 from app.services.token import get_token_manager, EffortType
 
 
@@ -402,6 +406,16 @@ class ChatService:
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
 
+        if model_requires_special_subscription(model):
+            if not token_mgr.has_entitled_token_for_model(model):
+                reason = token_mgr.model_access_denial_reason(model)
+                logger.warning(
+                    "Model access denied: model={} reason={}",
+                    model,
+                    reason or "insufficient_heavy_subscription",
+                )
+                raise model_access_denied_error(model)
+
         # 解析参数
         if reasoning_effort is None:
             show_think = get_config("app.thinking")
@@ -482,11 +496,10 @@ class ChatService:
                     continue
 
                 if transient_upstream(e):
-                    has_alternative_token = False
-                    for pool_name in ModelService.pool_candidates_for_model(model):
-                        if token_mgr.get_token(pool_name, exclude=tried_tokens):
-                            has_alternative_token = True
-                            break
+                    has_alternative_token = token_mgr.has_available_token_for_model(
+                        model,
+                        exclude=tried_tokens,
+                    )
                     if not has_alternative_token:
                         raise
                     logger.warning(

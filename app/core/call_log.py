@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 from app.core.config import get_config
 from app.core.logger import logger
-from app.core.storage import get_storage
+from app.core.call_log_store import get_call_log_store
 
 _CALL_LOG_CLEANUP_INTERVAL_SEC = 60
 _cleanup_lock = asyncio.Lock()
@@ -97,7 +97,7 @@ async def _cleanup_if_due(force: bool = False) -> None:
         if not force and (now - _last_cleanup_at) < _CALL_LOG_CLEANUP_INTERVAL_SEC:
             return
         try:
-            await get_storage().cleanup_call_logs(retention_days)
+            await get_call_log_store().cleanup_call_logs(retention_days)
             _last_cleanup_at = now
         except Exception as exc:
             logger.warning(f"Call log cleanup skipped: {exc}")
@@ -145,7 +145,7 @@ def _extract_error_details(error: Any) -> tuple[str, str]:
 
 async def _append_record(record: dict[str, Any]) -> None:
     await _cleanup_if_due(force=False)
-    await get_storage().append_call_log(record)
+    await get_call_log_store().append_call_log(record)
 
 
 async def log_call_success() -> None:

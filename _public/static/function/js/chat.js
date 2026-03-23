@@ -1347,7 +1347,7 @@
 
   async function loadModels() {
     if (!modelDropdown) return;
-    const fallback = ['grok-auto', 'grok-3-fast', 'grok-4-expert', 'grok-4-heavy', 'grok-imagine-1.0-fast'];
+    const fallback = ['grok-auto', 'grok-3-fast', 'grok-4-expert', 'grok-imagine-1.0-fast'];
     const preferred = 'grok-auto';
     try {
       const res = await fetch('/v1/models', { cache: 'no-store' });

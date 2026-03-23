@@ -16,11 +16,16 @@
     <div class="flex items-center justify-between gap-3 flex-wrap">
       <div>
         <h2 class="text-2xl font-semibold">调用日志</h2>
-        <p class="text-[var(--accents-4)] mt-1 text-sm">查看逐次调用明细、账号聚合次数、模型与耗时。</p>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">默认显示最新 100 条记录，可继续翻页查看更早历史；统计始终按当前筛选条件下的全部历史计算。</p>
       </div>
-      <button id="clear-call-logs-btn" type="button" class="geist-button-danger text-xs px-3" onclick="clearCallLogs()">
-        一键清空日志
-      </button>
+      <div class="flex items-center gap-2 flex-wrap">
+        <button id="export-call-logs-btn" type="button" class="geist-button text-xs px-3" onclick="exportCallLogs()">
+          导出全部 CSV
+        </button>
+        <button id="clear-call-logs-btn" type="button" class="geist-button-danger text-xs px-3" onclick="clearCallLogs()">
+          一键清空日志
+        </button>
+      </div>
     </div>
 
     <section class="call-log-panel">
@@ -42,7 +47,7 @@
           <input id="filter-model" class="geist-input" type="text" placeholder="例如 grok-3">
         </label>
         <label>
-          <span>账号关键字</span>
+          <span>账号关键词</span>
           <input id="filter-account" class="geist-input" type="text" placeholder="Email / Token / Pool">
         </label>
         <label>
@@ -59,6 +64,7 @@
         <button type="button" class="geist-button-outline text-xs px-3" onclick="resetFilters()">重置</button>
         <span id="call-logs-status" class="text-xs text-[var(--accents-4)]"></span>
       </div>
+      <p id="migration-status" class="text-xs text-amber-500"></p>
     </section>
 
     <section class="call-log-summary-grid">
@@ -82,7 +88,7 @@
 
     <section class="call-log-panel">
       <div class="flex items-center justify-between gap-3 flex-wrap">
-        <h3 class="text-lg font-semibold">账号排行</h3>
+        <h3 class="text-lg font-semibold">账号排行 Top 20</h3>
         <span id="accounts-count" class="text-xs text-[var(--accents-4)]"></span>
       </div>
       <div class="overflow-x-auto">
@@ -153,6 +159,6 @@
   <script src="/static/common/js/header.js?v=1.7.3"></script>
   <script src="/static/common/js/footer.js?v=1.7.0"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/admin/js/call-logs.js?v=1.7.3"></script>
+  <script src="/static/admin/js/call-logs.js?v=1.8.0"></script>
 </body>
 </html>

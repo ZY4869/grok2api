@@ -1,7 +1,7 @@
 """Token 池管理"""
 
 import random
-from typing import Dict, List, Optional, Iterator, Set
+from typing import Callable, Dict, Iterator, List, Optional, Set
 
 from app.services.token.models import TokenInfo, TokenStatus, TokenPoolStats
 from app.core.config import get_config
@@ -37,7 +37,10 @@ class TokenPool:
             return False
 
     def select(
-        self, exclude: set = None, prefer_tags: Optional[Set[str]] = None
+        self,
+        exclude: set = None,
+        prefer_tags: Optional[Set[str]] = None,
+        predicate: Optional[Callable[[TokenInfo], bool]] = None,
     ) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
@@ -65,6 +68,7 @@ class TokenPool:
                 for t in self._tokens.values()
                 if t.is_available(consumed_mode=True)
                 and (not exclude or t.token not in exclude)
+                and (predicate is None or predicate(t))
             ]
 
             if not available:
@@ -91,6 +95,7 @@ class TokenPool:
                 for t in self._tokens.values()
                 if t.is_available(consumed_mode=False)
                 and (not exclude or t.token not in exclude)
+                and (predicate is None or predicate(t))
             ]
 
             if not available:

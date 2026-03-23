@@ -1,30 +1,36 @@
 """
-Grok 模型管理服务
+Grok 妯″瀷绠＄悊鏈嶅姟
 """
 
 from enum import Enum
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
+
 from pydantic import BaseModel, Field
 
 from app.core.exceptions import ValidationException
 
+BASIC_POOL_NAME = "ssoBasic"
+SUPER_POOL_NAME = "ssoSuper"
+HEAVY_POOL_NAME = "ssoHeavy"
+HEAVY_MODEL_ID = "grok-4-heavy"
+
 
 class Tier(str, Enum):
-    """模型档位"""
+    """妯″瀷妗ｄ綅"""
 
     BASIC = "basic"
     SUPER = "super"
 
 
 class Cost(str, Enum):
-    """计费类型"""
+    """璁¤垂绫诲瀷"""
 
     LOW = "low"
     HIGH = "high"
 
 
 class ModelInfo(BaseModel):
-    """模型信息"""
+    """妯″瀷淇℃伅"""
 
     model_id: str
     grok_model: str
@@ -40,10 +46,9 @@ class ModelInfo(BaseModel):
 
 
 class ModelService:
-    """模型管理服务"""
+    """妯″瀷绠＄悊鏈嶅姟"""
 
     MODELS = [
-        # ── 快捷模式（与 Grok 网页一致，使用 modeId 方式请求）──
         ModelInfo(
             model_id="grok-auto",
             grok_model="",
@@ -75,7 +80,7 @@ class ModelService:
             use_mode_id=True,
         ),
         ModelInfo(
-            model_id="grok-4-heavy",
+            model_id=HEAVY_MODEL_ID,
             grok_model="grok-4",
             model_mode="heavy",
             tier=Tier.SUPER,
@@ -84,7 +89,6 @@ class ModelService:
             description="SuperGrok Heavy (grok-4)",
             use_mode_id=True,
         ),
-        # ── 图片 / 视频模型 ──
         ModelInfo(
             model_id="grok-imagine-1.0-fast",
             grok_model="grok-3",
@@ -127,28 +131,28 @@ class ModelService:
 
     @classmethod
     def get(cls, model_id: str) -> Optional[ModelInfo]:
-        """获取模型信息"""
+        """鑾峰彇妯″瀷淇℃伅"""
         return cls._map.get(model_id)
 
     @classmethod
     def list(cls) -> list[ModelInfo]:
-        """获取所有模型"""
+        """鑾峰彇鎵€鏈夋ā鍨?"""
         return list(cls._map.values())
 
     @classmethod
     def valid(cls, model_id: str) -> bool:
-        """模型是否有效"""
+        """妯″瀷鏄惁鏈夋晥"""
         return model_id in cls._map
 
     @classmethod
     def is_mode_id(cls, model_id: str) -> bool:
-        """是否为快捷模式（使用 modeId 方式请求）"""
+        """鏄惁涓哄揩鎹锋ā寮忥紙浣跨敤 modeId 鏂瑰紡璇锋眰锛?"""
         model = cls.get(model_id)
         return model.use_mode_id if model else False
 
     @classmethod
     def to_grok(cls, model_id: str) -> Tuple[str, str]:
-        """转换为 Grok 参数"""
+        """杞崲涓?Grok 鍙傛暟"""
         model = cls.get(model_id)
         if not model:
             raise ValidationException(f"Invalid model ID: {model_id}")
@@ -156,20 +160,26 @@ class ModelService:
 
     @classmethod
     def pool_for_model(cls, model_id: str) -> str:
-        """根据模型选择 Token 池"""
+        """鏍规嵁妯″瀷閫夋嫨 Token 姹?"""
+        if model_id == HEAVY_MODEL_ID:
+            return HEAVY_POOL_NAME
         model = cls.get(model_id)
         if model and model.tier == Tier.SUPER:
-            return "ssoSuper"
-        return "ssoBasic"
+            return SUPER_POOL_NAME
+        return BASIC_POOL_NAME
 
     @classmethod
     def pool_candidates_for_model(cls, model_id: str) -> List[str]:
-        """按优先级返回可用 Token 池列表"""
-        model = cls.get(model_id)
-        if model and model.tier == Tier.SUPER:
-            return ["ssoSuper"]
-        # 基础模型优先使用 basic 池，缺失时可回退到 super 池
-        return ["ssoBasic", "ssoSuper"]
+        """鎸変紭鍏堢骇杩斿洖鍙敤 Token 姹犲垪琛?"""
+        if model_id == HEAVY_MODEL_ID:
+            return [HEAVY_POOL_NAME]
+        return [BASIC_POOL_NAME, SUPER_POOL_NAME, HEAVY_POOL_NAME]
 
 
-__all__ = ["ModelService"]
+__all__ = [
+    "BASIC_POOL_NAME",
+    "SUPER_POOL_NAME",
+    "HEAVY_POOL_NAME",
+    "HEAVY_MODEL_ID",
+    "ModelService",
+]

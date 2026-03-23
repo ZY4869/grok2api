@@ -18,7 +18,14 @@ from app.services.token.models import (
 from app.core.storage import get_storage, LocalStorage
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
+from app.services.grok.services.model import (
+    BASIC_POOL_NAME,
+    HEAVY_POOL_NAME,
+    ModelService,
+    SUPER_POOL_NAME,
+)
 from app.services.token.pool import TokenPool
+from app.services.token.model_access import model_requires_special_subscription
 from app.services.grok.batch_services.usage import UsageService
 from app.services.reverse.utils.retry import RetryContext, extract_retry_after
 
@@ -32,12 +39,8 @@ DEFAULT_SAVE_DELAY_MS = 500
 DEFAULT_USAGE_FLUSH_INTERVAL_SEC = 5
 SUPER_WINDOW_THRESHOLD_SECONDS = 14400
 
-SUPER_POOL_NAME = "ssoSuper"
-BASIC_POOL_NAME = "ssoBasic"
-
-
 def _default_quota_for_pool(pool_name: str) -> int:
-    if pool_name == SUPER_POOL_NAME:
+    if pool_name in {SUPER_POOL_NAME, HEAVY_POOL_NAME}:
         return SUPER_DEFAULT_QUOTA
     return BASIC__DEFAULT_QUOTA
 
@@ -110,7 +113,10 @@ class TokenManager:
                                 ):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
-                            if quota_missing and pool_name == SUPER_POOL_NAME:
+                            if quota_missing and pool_name in {
+                                SUPER_POOL_NAME,
+                                HEAVY_POOL_NAME,
+                            }:
                                 token_info.quota = SUPER_DEFAULT_QUOTA
                             pool.add(token_info)
                         except Exception as e:
@@ -352,7 +358,30 @@ class TokenManager:
             if self._dirty:
                 self._schedule_save()
 
-    def get_token(self, pool_name: str = "ssoBasic", exclude: set = None, prefer_tags: Optional[Set[str]] = None) -> Optional[str]:
+    def _select_token_info(
+        self,
+        pool_name: str = "ssoBasic",
+        exclude: set = None,
+        prefer_tags: Optional[Set[str]] = None,
+        model_id: Optional[str] = None,
+    ) -> Optional["TokenInfo"]:
+        pool = self.pools.get(pool_name)
+        if not pool:
+            logger.warning(f"Pool '{pool_name}' not found")
+            return None
+
+        return pool.select(
+            exclude=exclude,
+            prefer_tags=prefer_tags,
+        )
+
+    def get_token(
+        self,
+        pool_name: str = "ssoBasic",
+        exclude: set = None,
+        prefer_tags: Optional[Set[str]] = None,
+        model_id: Optional[str] = None,
+    ) -> Optional[str]:
         """
         获取可用 Token
 
@@ -363,12 +392,12 @@ class TokenManager:
         Returns:
             Token 字符串或 None
         """
-        pool = self.pools.get(pool_name)
-        if not pool:
-            logger.warning(f"Pool '{pool_name}' not found")
-            return None
-
-        token_info = pool.select(exclude=exclude, prefer_tags=prefer_tags)
+        token_info = self._select_token_info(
+            pool_name,
+            exclude=exclude,
+            prefer_tags=prefer_tags,
+            model_id=model_id,
+        )
         if not token_info:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
@@ -379,7 +408,13 @@ class TokenManager:
             return token[4:]
         return token
 
-    def get_token_info(self, pool_name: str = "ssoBasic", prefer_tags: Optional[Set[str]] = None) -> Optional["TokenInfo"]:
+    def get_token_info(
+        self,
+        pool_name: str = "ssoBasic",
+        prefer_tags: Optional[Set[str]] = None,
+        exclude: set = None,
+        model_id: Optional[str] = None,
+    ) -> Optional["TokenInfo"]:
         """
         获取可用 Token 的完整信息
 
@@ -389,18 +424,48 @@ class TokenManager:
         Returns:
             TokenInfo 对象或 None
         """
-        pool = self.pools.get(pool_name)
-        if not pool:
-            logger.warning(f"Pool '{pool_name}' not found")
-            return None
-
-        token_info = pool.select(prefer_tags=prefer_tags)
+        token_info = self._select_token_info(
+            pool_name,
+            exclude=exclude,
+            prefer_tags=prefer_tags,
+            model_id=model_id,
+        )
         if not token_info:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
 
         self._bind_token_context(token_info, pool_name)
         return token_info
+
+    def has_entitled_token_for_model(self, model_id: str) -> bool:
+        if not model_requires_special_subscription(model_id):
+            return True
+
+        for pool_name in ModelService.pool_candidates_for_model(model_id):
+            pool = self.pools.get(pool_name)
+            if pool and pool.list():
+                return True
+        return False
+
+    def has_available_token_for_model(
+        self,
+        model_id: str,
+        exclude: Optional[Set[str]] = None,
+    ) -> bool:
+        for pool_name in ModelService.pool_candidates_for_model(model_id):
+            token_info = self._select_token_info(
+                pool_name,
+                exclude=exclude,
+                model_id=model_id,
+            )
+            if token_info:
+                return True
+        return False
+
+    def model_access_denial_reason(self, model_id: str) -> str:
+        if not model_requires_special_subscription(model_id):
+            return ""
+        return "no_heavy_pool_tokens"
 
     def get_token_for_video(
         self,
@@ -434,8 +499,11 @@ class TokenManager:
                 ordered_pools.remove(primary_pool)
                 ordered_pools.insert(0, primary_pool)
         else:
+            ordered_pools = [primary_pool]
             fallback_pool = BASIC_POOL_NAME if requires_super else SUPER_POOL_NAME
-            ordered_pools = [primary_pool, fallback_pool]
+            for pool_name in (fallback_pool, HEAVY_POOL_NAME):
+                if pool_name not in ordered_pools:
+                    ordered_pools.append(pool_name)
 
         for idx, pool_name in enumerate(ordered_pools):
             token_info = self.get_token_info(pool_name)
@@ -958,7 +1026,7 @@ class TokenManager:
         # 收集需要刷新的 token
         to_refresh: List[tuple[str, TokenInfo]] = []
         for pool in self.pools.values():
-            if pool.name == SUPER_POOL_NAME:
+            if pool.name in {SUPER_POOL_NAME, HEAVY_POOL_NAME}:
                 interval_hours = get_config(
                     "token.super_refresh_interval_hours",
                     DEFAULT_SUPER_REFRESH_INTERVAL_HOURS,

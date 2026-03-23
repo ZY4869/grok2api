@@ -128,10 +128,27 @@ def _normalize_subscription(item: dict[str, Any]) -> dict[str, Any]:
     if isinstance(stripe, dict):
         if stripe.get("subscriptionType"):
             normalized["subscription_type"] = str(stripe.get("subscriptionType"))
+        if stripe.get("subscriptionName"):
+            normalized["subscription_name"] = str(stripe.get("subscriptionName"))
+        if stripe.get("planName"):
+            normalized["plan_name"] = str(stripe.get("planName"))
+        if stripe.get("productName"):
+            normalized["product_name"] = str(stripe.get("productName"))
         if stripe.get("currentPeriodEnd") is not None:
             normalized["current_period_end"] = stripe.get("currentPeriodEnd")
         if stripe.get("cancelAtPeriodEnd") is not None:
             normalized["cancel_at_period_end"] = bool(stripe.get("cancelAtPeriodEnd"))
+
+    for source_key, target_key in (
+        ("name", "name"),
+        ("displayName", "display_name"),
+        ("subscriptionName", "subscription_name"),
+        ("planName", "plan_name"),
+        ("productName", "product_name"),
+    ):
+        value = item.get(source_key)
+        if value:
+            normalized[target_key] = str(value)
 
     enterprise = item.get("enterprise")
     if isinstance(enterprise, dict) and enterprise.get("teamId"):

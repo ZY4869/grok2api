@@ -4,6 +4,11 @@ from pydantic import BaseModel
 from app.core.auth import verify_function_key
 from app.core.call_log import begin_call_log, log_call_success
 from app.core.exceptions import AppException
+from app.services.grok.services.model import (
+    BASIC_POOL_NAME,
+    HEAVY_POOL_NAME,
+    SUPER_POOL_NAME,
+)
 from app.services.grok.services.voice import VoiceService
 from app.services.token.manager import get_token_manager
 
@@ -31,7 +36,7 @@ async def function_voice_token(
     begin_call_log("function.voice.token", model="voice-token")
     token_mgr = await get_token_manager()
     sso_token = None
-    for pool_name in ("ssoBasic", "ssoSuper"):
+    for pool_name in (BASIC_POOL_NAME, SUPER_POOL_NAME, HEAVY_POOL_NAME):
         sso_token = token_mgr.get_token(pool_name)
         if sso_token:
             break

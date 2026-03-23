@@ -24,7 +24,9 @@ function hasTokenTableView() {
 }
 
 function getDefaultQuotaForPool(pool) {
-  return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
+  return pool === 'ssoSuper' || pool === 'ssoHeavy'
+    ? DEFAULT_QUOTA_SUPER
+    : DEFAULT_QUOTA_BASIC;
 }
 
 function setText(id, text) {

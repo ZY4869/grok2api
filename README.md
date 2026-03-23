@@ -46,11 +46,11 @@ docker compose up -d
 
 ### Vercel 部署
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ZY4869/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%7D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/ZY4869/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL,CALL_LOG_DB_URL&envDefaults=%7B%22DATA_DIR%22%3A%22/tmp/data%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%2C%22CALL_LOG_DB_URL%22%3A%22%22%7D)
 
 > 请务必设置 `DATA_DIR=/tmp/data` 并关闭文件日志 `LOG_FILE_ENABLED=false`。
 >
-> 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。
+> 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。若希望后台调用日志独立存储或在 Redis 部署下跨实例共享，请额外设置 `CALL_LOG_DB_URL`。
 
 ### Render 部署
 
@@ -58,7 +58,7 @@ docker compose up -d
 
 > Render 免费实例 15 分钟无访问会休眠；重启/重新部署会丢失数据。
 >
-> 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。
+> 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。若希望后台调用日志独立存储或在 Redis 部署下跨实例共享，请额外设置 `CALL_LOG_DB_URL`。
 
 <br>
 
@@ -93,6 +93,7 @@ docker compose up -d
 | `SERVER_WORKERS` | 服务进程数量 | `1` | `2` |
 | `SERVER_STORAGE_TYPE` | 存储类型（`local`/`redis`/`mysql`/`pgsql`） | `local` | `pgsql` |
 | `SERVER_STORAGE_URL` | 存储连接串（local 时可为空） | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+| `CALL_LOG_DB_URL` | 后台调用日志专用数据库连接串；未设置时，`mysql/pgsql` 默认复用 `SERVER_STORAGE_URL`，其余默认使用 `DATA_DIR/call_logs.db` | `""` | `sqlite:///./data/call_logs.db` |
 
 > MySQL 示例：`mysql+aiomysql://user:password@host:3306/db`（若填 `mysql://` 会自动转为 `mysql+aiomysql://`）
 
@@ -116,7 +117,7 @@ docker compose up -d
 | `grok-auto` | grok-3/grok-4 | 自动选择 Fast 或 Expert | Basic/Super | 支持 | 支持 |
 | `grok-3-fast` | grok-3 | 快速响应 | Basic/Super | 支持 | 支持 |
 | `grok-4-expert` | grok-4 | 深度思考 | Basic/Super | 支持 | 支持 |
-| `grok-4-heavy` | grok-4 | SuperGrok Heavy | Super | 支持 | 支持 |
+| `grok-4-heavy` | grok-4 | SuperGrok Heavy | SuperGrok Heavy | 支持 | 支持 |
 
 **图片 / 视频模型**
 

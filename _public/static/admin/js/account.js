@@ -480,8 +480,6 @@ function renderTable() {
     quotaCell.className = "text-center font-mono text-xs";
     quotaCell.textContent = String(item.quota || 0);
 
-    const realQuotaCell = createRealQuotaCell(item);
-
     const lastCheckCell = document.createElement("td");
     lastCheckCell.className = "text-center text-xs text-gray-500 account-last-check-cell";
     lastCheckCell.textContent = formatTime(item.last_alive_check_at);
@@ -567,7 +565,6 @@ function renderTable() {
     row.appendChild(aliveCell);
     row.appendChild(nsfwCell);
     row.appendChild(quotaCell);
-    row.appendChild(realQuotaCell);
     row.appendChild(lastCheckCell);
     row.appendChild(actionCell);
     fragment.appendChild(row);
