@@ -200,7 +200,7 @@ app = create_app()
 
 if __name__ == "__main__":
     host = os.getenv("SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("SERVER_PORT", "8000"))
+    port = int(os.getenv("SERVER_PORT", "8082"))
     workers = int(os.getenv("SERVER_WORKERS", "1"))
     log_level = os.getenv("LOG_LEVEL", "INFO").lower()
     logger.error(

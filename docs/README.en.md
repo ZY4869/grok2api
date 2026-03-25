@@ -22,7 +22,7 @@ Grok2API rebuilt with **FastAPI**, fully aligned with the latest web call format
 ```bash
 uv sync
 
-uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 main:app
+uv run granian --interface asgi --host 0.0.0.0 --port 8082 --workers 1 main:app
 ```
 
 ### Docker Compose
@@ -64,7 +64,7 @@ docker compose up -d
 
 ## Admin Panel
 
-- Access: `http://<host>:<port>/admin` (use `SERVER_PORT` for local run and `HOST_PORT` for Docker Compose; both default to `8000`)
+- Access: `http://<host>:<port>/admin` (use `SERVER_PORT` for local run and `HOST_PORT` for Docker Compose; both default to `8082`)
 - Default password: `grok2api` (config `app.app_key`, recommended to change)
 
 **Features**:
@@ -88,8 +88,8 @@ docker compose up -d
 | `LOG_FILE_ENABLED` | Enable file logging | `true` | `false` |
 | `DATA_DIR` | Data dir (config/tokens/locks) | `./data` | `/data` |
 | `SERVER_HOST` | Bind address | `0.0.0.0` | `0.0.0.0` |
-| `SERVER_PORT` | Server port | `8000` | `8000` |
-| `HOST_PORT` | Host published port for Docker Compose | `8000` | `9000` |
+| `SERVER_PORT` | Server port | `8082` | `8082` |
+| `HOST_PORT` | Host published port for Docker Compose | `8082` | `9000` |
 | `SERVER_WORKERS` | Server worker count | `1` | `2` |
 | `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
 | `SERVER_STORAGE_URL` | Storage DSN (optional for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
@@ -132,14 +132,14 @@ docker compose up -d
 
 ## API
 
-> The examples below use `localhost:8000` by default; if you set `HOST_PORT` in Docker Compose, replace the port accordingly.
+> The examples below use `localhost:8082` by default; if you set `HOST_PORT` in Docker Compose, replace the port accordingly.
 
 ### `POST /v1/chat/completions`
 
 > Generic endpoint: chat, image generation, image editing, video generation, video upscaling
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:8082/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
@@ -213,7 +213,7 @@ curl http://localhost:8000/v1/chat/completions \
 > OpenAI Responses API compatible endpoint (subset)
 
 ```bash
-curl http://localhost:8000/v1/responses \
+curl http://localhost:8082/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
@@ -258,7 +258,7 @@ curl http://localhost:8000/v1/responses \
 > Image generation endpoint
 
 ```bash
-curl http://localhost:8000/v1/images/generations \
+curl http://localhost:8082/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
@@ -300,7 +300,7 @@ curl http://localhost:8000/v1/images/generations \
 > Image edit endpoint (multipart/form-data)
 
 ```bash
-curl http://localhost:8000/v1/images/edits \
+curl http://localhost:8082/v1/images/edits \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -F "model=grok-imagine-1.0-edit" \
   -F "prompt=Make the image clearer" \
@@ -340,7 +340,7 @@ curl http://localhost:8000/v1/images/edits \
 > Video generation endpoint (OpenAI videos.create compatible)
 
 ```bash
-curl http://localhost:8000/v1/videos \
+curl http://localhost:8082/v1/videos \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{

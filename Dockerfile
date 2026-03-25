@@ -43,7 +43,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai \
     VIRTUAL_ENV=/opt/venv \
     SERVER_HOST=0.0.0.0 \
-    SERVER_PORT=8000 \
+    SERVER_PORT=8082 \
     SERVER_WORKERS=1
 
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
@@ -70,8 +70,8 @@ COPY scripts ./scripts
 RUN mkdir -p /app/data /app/logs \
     && chmod +x /app/scripts/*.sh
 
-EXPOSE 8000
+EXPOSE 8082
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
-CMD ["sh", "-c", "granian --interface asgi --host ${SERVER_HOST:-0.0.0.0} --port ${SERVER_PORT:-8000} --workers ${SERVER_WORKERS:-1} main:app"]
+CMD ["sh", "-c", "granian --interface asgi --host ${SERVER_HOST:-0.0.0.0} --port ${SERVER_PORT:-8082} --workers ${SERVER_WORKERS:-1} main:app"]

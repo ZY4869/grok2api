@@ -95,6 +95,10 @@ def _extract_video_url(content: str) -> str:
     if url_match:
         return url_match.group(0).strip().rstrip(".,)")
 
+    local_match = re.search(r"""(/v1/files/video/[^\s"'<>]+)""", content)
+    if local_match:
+        return local_match.group(1).strip().rstrip(".,)")
+
     return ""
 
 
