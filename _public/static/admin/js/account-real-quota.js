@@ -50,6 +50,10 @@
     )}:${pad(date.getMinutes())}`;
   }
 
+  function isFutureTimestamp(timestamp) {
+    return Number(timestamp || 0) > Date.now();
+  }
+
   function getTierLabel(tier, fallbackName) {
     if (fallbackName) return String(fallbackName);
     if (!tier) return "未查询";
@@ -157,6 +161,52 @@
     return parts.join(" | ");
   }
 
+  function buildRateLimitProbeLines(item) {
+    const lines = [];
+    if (!item || typeof item !== "object") return lines;
+
+    if (isFutureTimestamp(item.suspected_rate_limited_until)) {
+      lines.push(`soft-cooling until: ${formatTimestamp(item.suspected_rate_limited_until)}`);
+    }
+    if (item.status === "cooling" && item.cooling_until) {
+      lines.push(`cooling until: ${formatTimestamp(item.cooling_until)}`);
+    }
+    if (item.last_rate_limit_probe_at) {
+      lines.push(`last probe: ${formatTimestamp(item.last_rate_limit_probe_at)}`);
+    }
+
+    const probe =
+      item.last_rate_limit_probe_result &&
+      typeof item.last_rate_limit_probe_result === "object"
+        ? item.last_rate_limit_probe_result
+        : null;
+    if (!probe) return lines;
+
+    if (probe.action) {
+      lines.push(`probe action: ${probe.action}`);
+    }
+
+    const remaining = toFiniteNumber(
+      probe.remaining_queries ?? probe.remainingQueries ?? probe.remaining_tokens
+    );
+    if (remaining !== null) {
+      lines.push(`probe remaining: ${remaining}`);
+    }
+
+    const waitSeconds = toFiniteNumber(
+      probe.wait_time_seconds ?? probe.waitTimeSeconds
+    );
+    if (waitSeconds !== null) {
+      lines.push(`probe wait: ${waitSeconds}s`);
+    }
+
+    if (probe.error) {
+      lines.push(`probe error: ${probe.error}`);
+    }
+
+    return lines;
+  }
+
   function buildTitle(item, label, error) {
     const quota =
       item && item.real_quota && typeof item.real_quota === "object" ? item.real_quota : null;
@@ -202,6 +252,10 @@
       lines.push(`更新时间: ${formatTimestamp(item.last_real_quota_check_at)}`);
     }
 
+    buildRateLimitProbeLines(item).forEach((line) => {
+      lines.push(line);
+    });
+
     return lines.join("\n");
   }
 
@@ -223,11 +277,26 @@
       quota && Array.isArray(quota.partial_errors) ? quota.partial_errors : [];
     const backendError = item.last_real_quota_error || "";
     const error = backendError || (!hasLiveQuota ? partialErrors.join("；") : "");
-    const note = !hasData && !error
+    let note = !hasData && !error
       ? "点击刷新真实额度"
       : !hasLiveQuota && error
         ? "本次刷新未获取到实时额度"
         : "";
+    if (isFutureTimestamp(item && item.suspected_rate_limited_until)) {
+      note = [note, `soft-cooling until ${formatTimestamp(item.suspected_rate_limited_until)}`]
+        .filter(Boolean)
+        .join(" | ");
+    }
+    if (
+      item &&
+      item.last_rate_limit_probe_result &&
+      typeof item.last_rate_limit_probe_result === "object" &&
+      item.last_rate_limit_probe_result.action
+    ) {
+      note = [note, `probe ${item.last_rate_limit_probe_result.action}`]
+        .filter(Boolean)
+        .join(" | ");
+    }
     const label = !hasData && error
       ? "刷新失败"
       : hasData

@@ -39,10 +39,13 @@ from app.services.token.model_access import (
 )
 from app.services.token import get_token_manager, EffortType
 from app.services.token.quota import (
+    RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
+    RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
     all_candidate_tokens_exhausted,
     auto_image_quota_requirement,
     confirm_quota_exhausted,
     image_limit_exception,
+    resolve_rate_limit_hit,
     select_token_for_requirement,
 )
 
@@ -799,12 +802,34 @@ class ChatService:
                         continue
 
                 if rate_limited(e):
-                    # 配额不足，标记 token 为 cooling 并换 token 重试
-                    await token_mgr.mark_rate_limited(token)
-                    logger.warning(
-                        f"Token {token[:10]}... rate limited (429), "
-                        f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                    resolution = await resolve_rate_limit_hit(
+                        token_mgr,
+                        token,
+                        model,
+                        requirement=quota_requirement,
+                        exhausted_tokens=exhausted_tokens,
                     )
+                    if (
+                        quota_requirement
+                        and resolution.action == RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED
+                        and all_candidate_tokens_exhausted(
+                            selection_total, exhausted_tokens
+                        )
+                    ):
+                        raise image_limit_exception(selection_total)
+                    if resolution.action == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN:
+                        tried_tokens.discard(token)
+                        if resolution.retry_after_seconds > 0:
+                            await asyncio.sleep(resolution.retry_after_seconds)
+                        logger.info(
+                            f"Token {token[:10]}... rate limit cleared by probe, "
+                            f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Token {token[:10]}... rate limited (429), "
+                            f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                        )
                     continue
 
                 if transient_upstream(e):

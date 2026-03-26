@@ -34,6 +34,11 @@ from app.services.reverse.utils.session import ResettableSession
 from app.services.reverse.video_upscale import VideoUpscaleReverse
 from app.services.token import EffortType, get_token_manager
 from app.services.token.manager import BASIC_POOL_NAME
+from app.services.token.quota import (
+    RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
+    rate_limit_requirement_for_model,
+    resolve_rate_limit_hit,
+)
 
 _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
@@ -813,13 +818,25 @@ class VideoService:
         prompt, _, image_attachments = MessageExtractor.extract(messages)
 
         pool_candidates = ModelService.pool_candidates_for_model(model)
-        token_info = token_mgr.get_token_for_video(
-            resolution=resolution,
-            video_length=video_length,
-            pool_candidates=pool_candidates,
+        model_info = ModelService.get(model)
+        effort = (
+            EffortType.HIGH
+            if (model_info and model_info.cost.value == "high")
+            else EffortType.LOW
         )
+        max_token_retries = int(get_config("retry.max_retry") or 3)
+        target_length = int(video_length or 6)
+        message = _build_message(prompt, preset)
+        quota_requirement = rate_limit_requirement_for_model(model)
+        service = VideoService()
+        tried_tokens: set[str] = set()
+        exhausted_tokens: set[str] = set()
+        last_error: Exception | None = None
+        preferred_token: Optional[str] = None
 
-        if not token_info:
+        def _raise_no_token() -> None:
+            if last_error:
+                raise last_error
             raise AppException(
                 message="No available tokens. Please try again later.",
                 error_type=ErrorType.RATE_LIMIT.value,
@@ -827,79 +844,98 @@ class VideoService:
                 status_code=429,
             )
 
-        token = token_info.token
-        if token.startswith("sso="):
-            token = token[4:]
+        def _select_video_token(preferred: Optional[str] = None) -> Optional[str]:
+            if preferred and preferred not in exhausted_tokens:
+                _, preferred_info = token_mgr.get_token_entry(preferred)
+                if preferred_info and preferred_info.is_available():
+                    token_mgr.bind_token_context(preferred)
+                    return preferred
 
-        pool_name = token_mgr.get_pool_name_for_token(token) or BASIC_POOL_NAME
-        is_super_pool = pool_name != BASIC_POOL_NAME
+            excluded = set(tried_tokens)
+            excluded.update(exhausted_tokens)
+            token_info = token_mgr.get_token_for_video(
+                resolution=resolution,
+                video_length=video_length,
+                pool_candidates=pool_candidates,
+                exclude=excluded,
+            )
+            if not token_info:
+                return None
 
-        requested_resolution = resolution
-        should_upscale = requested_resolution == "720p" and pool_name == BASIC_POOL_NAME
-        generation_resolution = "480p" if should_upscale else requested_resolution
-        upscale_timing = _resolve_upscale_timing() if should_upscale else "complete"
+            current_token = token_info.token
+            if current_token.startswith("sso="):
+                current_token = current_token[4:]
+            return current_token
 
-        target_length = int(video_length or 6)
-        round_plan = _build_round_plan(target_length, is_super=is_super_pool)
-        total_rounds = len(round_plan)
+        async def _prepare_attempt(current_token: str) -> Dict[str, Any]:
+            pool_name = token_mgr.get_pool_name_for_token(current_token) or BASIC_POOL_NAME
+            is_super_pool = pool_name != BASIC_POOL_NAME
+            should_upscale = resolution == "720p" and pool_name == BASIC_POOL_NAME
+            generation_resolution = "480p" if should_upscale else resolution
+            upscale_timing = _resolve_upscale_timing() if should_upscale else "complete"
+            round_plan = _build_round_plan(target_length, is_super=is_super_pool)
 
-        service = VideoService()
-        message = _build_message(prompt, preset)
-
-        image_url = None
-        if image_attachments:
-            upload_service = UploadService()
-            try:
-                if len(image_attachments) > 1:
-                    logger.info(
-                        "Video generation supports a single reference image; using the first one."
+            image_url = None
+            if image_attachments:
+                upload_service = UploadService()
+                try:
+                    if len(image_attachments) > 1:
+                        logger.info(
+                            "Video generation supports a single reference image; using the first one."
+                        )
+                    attach_data = image_attachments[0]
+                    _, file_uri = await upload_service.upload_file(
+                        attach_data, current_token
                     )
-                attach_data = image_attachments[0]
-                _, file_uri = await upload_service.upload_file(attach_data, token)
-                image_url = f"https://assets.grok.com/{file_uri}"
-                logger.info(f"Image uploaded for video: {image_url}")
-            finally:
-                await upload_service.close()
+                    image_url = f"https://assets.grok.com/{file_uri}"
+                    logger.info(f"Image uploaded for video: {image_url}")
+                finally:
+                    await upload_service.close()
 
-        if image_url:
-            seed_post_id = await service.create_image_post(token, image_url)
-        else:
-            seed_post_id = await service.create_post(token, prompt)
+            if image_url:
+                seed_post_id = await service.create_image_post(current_token, image_url)
+            else:
+                seed_post_id = await service.create_post(current_token, prompt)
 
-        model_info = ModelService.get(model)
-        effort = (
-            EffortType.HIGH
-            if (model_info and model_info.cost.value == "high")
-            else EffortType.LOW
-        )
+            return {
+                "generation_resolution": generation_resolution,
+                "round_plan": round_plan,
+                "seed_post_id": seed_post_id,
+                "should_upscale": should_upscale,
+                "upscale_timing": upscale_timing,
+            }
 
         async def _run_round_collect(
+            current_token: str,
+            attempt_ctx: Dict[str, Any],
             plan: VideoRoundPlan,
             *,
-            seed_id: str,
             last_id: str,
             original_id: Optional[str],
             source: str,
         ) -> VideoRoundResult:
             config_override = _build_round_config(
                 plan,
-                seed_post_id=seed_id,
+                seed_post_id=attempt_ctx["seed_post_id"],
                 last_post_id=last_id,
                 original_post_id=original_id,
                 prompt=prompt,
                 aspect_ratio=aspect_ratio,
-                resolution_name=generation_resolution,
+                resolution_name=attempt_ctx["generation_resolution"],
             )
             response = await _request_round_stream(
-                token=token,
+                token=current_token,
                 message=message,
                 model_config_override=config_override,
             )
             return await _collect_round_result(response, model=model, source=source)
 
-        async def _stream_chain() -> AsyncGenerator[str, None]:
+        async def _stream_chain(
+            current_token: str, attempt_ctx: Dict[str, Any]
+        ) -> AsyncGenerator[str, None]:
             writer = _VideoChainSSEWriter(model, show_think)
-            seed_id = seed_post_id
+            round_plan = attempt_ctx["round_plan"]
+            seed_id = attempt_ctx["seed_post_id"]
             last_id = seed_id
             original_id: Optional[str] = seed_id
             final_result: Optional[VideoRoundResult] = None
@@ -913,10 +949,10 @@ class VideoService:
                         original_post_id=original_id,
                         prompt=prompt,
                         aspect_ratio=aspect_ratio,
-                        resolution_name=generation_resolution,
+                        resolution_name=attempt_ctx["generation_resolution"],
                     )
                     response = await _request_round_stream(
-                        token=token,
+                        token=current_token,
                         message=message,
                         model_config_override=config_override,
                     )
@@ -944,13 +980,17 @@ class VideoService:
                         final_round=(plan.round_index == plan.total_rounds),
                     )
 
-                    if should_upscale and upscale_timing == "single" and round_result.video_url:
+                    if (
+                        attempt_ctx["should_upscale"]
+                        and attempt_ctx["upscale_timing"] == "single"
+                        and round_result.video_url
+                    ):
                         for chunk in writer.emit_note(
                             f"[round={plan.round_index}/{plan.total_rounds}] 正在对当前轮结果进行超分辨率\n"
                         ):
                             yield chunk
                         upgraded_url, upscaled = await _upscale_video_url(
-                            token, round_result.video_url
+                            current_token, round_result.video_url
                         )
                         if upscaled:
                             round_result.video_url = upgraded_url
@@ -975,23 +1015,30 @@ class VideoService:
                     )
 
                 final_video_url = final_result.video_url
-                if should_upscale and upscale_timing == "complete":
+                if (
+                    attempt_ctx["should_upscale"]
+                    and attempt_ctx["upscale_timing"] == "complete"
+                ):
                     for chunk in writer.emit_note("正在对视频进行超分辨率\n"):
                         yield chunk
-                    final_video_url, upscaled = await _upscale_video_url(token, final_video_url)
+                    final_video_url, upscaled = await _upscale_video_url(
+                        current_token, final_video_url
+                    )
                     if not upscaled:
                         logger.warning("Video upscale failed, fallback to 480p result")
 
                 if _public_asset_enabled():
                     for chunk in writer.emit_note("正在生成可公开访问链接\n"):
                         yield chunk
-                    final_video_url = await _create_public_video_link(token, final_video_url)
+                    final_video_url = await _create_public_video_link(
+                        current_token, final_video_url
+                    )
 
                 dl_service = DownloadService()
                 try:
                     rendered = await dl_service.render_video(
                         final_video_url,
-                        token,
+                        current_token,
                         final_result.thumbnail_url,
                     )
                 finally:
@@ -1004,21 +1051,19 @@ class VideoService:
             except asyncio.CancelledError:
                 logger.debug("Video stream chain cancelled by client", extra={"model": model})
                 raise
-            except UpstreamException as e:
-                if rate_limited(e):
-                    await token_mgr.mark_rate_limited(token)
-                raise
 
-        async def _collect_chain() -> Dict[str, Any]:
-            seed_id = seed_post_id
+        async def _collect_chain(current_token: str, attempt_ctx: Dict[str, Any]) -> Dict[str, Any]:
+            round_plan = attempt_ctx["round_plan"]
+            seed_id = attempt_ctx["seed_post_id"]
             last_id = seed_id
             original_id: Optional[str] = seed_id
             final_result: Optional[VideoRoundResult] = None
 
             for plan in round_plan:
                 round_result = await _run_round_collect(
+                    current_token,
+                    attempt_ctx,
                     plan,
-                    seed_id=seed_id,
                     last_id=last_id,
                     original_id=original_id,
                     source=f"collect-round-{plan.round_index}",
@@ -1031,9 +1076,13 @@ class VideoService:
                     final_round=(plan.round_index == plan.total_rounds),
                 )
 
-                if should_upscale and upscale_timing == "single" and round_result.video_url:
+                if (
+                    attempt_ctx["should_upscale"]
+                    and attempt_ctx["upscale_timing"] == "single"
+                    and round_result.video_url
+                ):
                     upgraded_url, upscaled = await _upscale_video_url(
-                        token, round_result.video_url
+                        current_token, round_result.video_url
                     )
                     if upscaled:
                         round_result.video_url = upgraded_url
@@ -1058,19 +1107,26 @@ class VideoService:
                 )
 
             final_video_url = final_result.video_url
-            if should_upscale and upscale_timing == "complete":
-                final_video_url, upscaled = await _upscale_video_url(token, final_video_url)
+            if (
+                attempt_ctx["should_upscale"]
+                and attempt_ctx["upscale_timing"] == "complete"
+            ):
+                final_video_url, upscaled = await _upscale_video_url(
+                    current_token, final_video_url
+                )
                 if not upscaled:
                     logger.warning("Video upscale failed, fallback to 480p result")
 
             if _public_asset_enabled():
-                final_video_url = await _create_public_video_link(token, final_video_url)
+                final_video_url = await _create_public_video_link(
+                    current_token, final_video_url
+                )
 
             dl_service = DownloadService()
             try:
                 content = await dl_service.render_video(
                     final_video_url,
-                    token,
+                    current_token,
                     final_result.thumbnail_url,
                 )
             finally:
@@ -1096,24 +1152,112 @@ class VideoService:
             }
 
         if is_stream:
-            return wrap_stream_with_usage(_stream_chain(), token_mgr, token, model)
+            async def _stream_retry() -> AsyncGenerator[str, None]:
+                nonlocal last_error, preferred_token
+                for attempt in range(max_token_retries):
+                    current_token = _select_video_token(preferred_token)
+                    preferred_token = None
+                    if not current_token:
+                        _raise_no_token()
 
-        try:
-            result = await _collect_chain()
-        except UpstreamException as e:
-            if rate_limited(e):
-                await token_mgr.mark_rate_limited(token)
-            raise
+                    tried_tokens.add(current_token)
+                    yielded = False
+                    try:
+                        attempt_ctx = await _prepare_attempt(current_token)
+                        wrapped = wrap_stream_with_usage(
+                            _stream_chain(current_token, attempt_ctx),
+                            token_mgr,
+                            current_token,
+                            model,
+                        )
+                        async for chunk in wrapped:
+                            yielded = True
+                            yield chunk
+                        return
+                    except UpstreamException as e:
+                        last_error = e
+                        if rate_limited(e):
+                            if yielded:
+                                raise
+                            resolution_result = await resolve_rate_limit_hit(
+                                token_mgr,
+                                current_token,
+                                model,
+                                requirement=quota_requirement,
+                                exhausted_tokens=exhausted_tokens,
+                            )
+                            if (
+                                resolution_result.action
+                                == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN
+                            ):
+                                tried_tokens.discard(current_token)
+                                preferred_token = current_token
+                                if resolution_result.retry_after_seconds > 0:
+                                    await asyncio.sleep(
+                                        resolution_result.retry_after_seconds
+                                    )
+                                logger.info(
+                                    f"Token {current_token[:10]}... rate limit cleared by probe, "
+                                    f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Token {current_token[:10]}... rate limited (429), "
+                                    f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                                )
+                            continue
+                        raise
 
-        try:
-            await token_mgr.consume(token, effort)
-            logger.debug(
-                f"Video completed, recorded usage (effort={effort.value})"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to record video usage: {e}")
+                _raise_no_token()
 
-        return result
+            return _stream_retry()
+
+        for attempt in range(max_token_retries):
+            current_token = _select_video_token(preferred_token)
+            preferred_token = None
+            if not current_token:
+                _raise_no_token()
+
+            tried_tokens.add(current_token)
+            try:
+                attempt_ctx = await _prepare_attempt(current_token)
+                result = await _collect_chain(current_token, attempt_ctx)
+                try:
+                    await token_mgr.consume(current_token, effort)
+                    logger.debug(
+                        f"Video completed, recorded usage (effort={effort.value})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record video usage: {e}")
+                return result
+            except UpstreamException as e:
+                last_error = e
+                if rate_limited(e):
+                    resolution_result = await resolve_rate_limit_hit(
+                        token_mgr,
+                        current_token,
+                        model,
+                        requirement=quota_requirement,
+                        exhausted_tokens=exhausted_tokens,
+                    )
+                    if resolution_result.action == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN:
+                        tried_tokens.discard(current_token)
+                        preferred_token = current_token
+                        if resolution_result.retry_after_seconds > 0:
+                            await asyncio.sleep(resolution_result.retry_after_seconds)
+                        logger.info(
+                            f"Token {current_token[:10]}... rate limit cleared by probe, "
+                            f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Token {current_token[:10]}... rate limited (429), "
+                            f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    continue
+                raise
+
+        _raise_no_token()
 
 
 class VideoStreamProcessor:

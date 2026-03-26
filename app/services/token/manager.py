@@ -37,6 +37,7 @@ DEFAULT_REFRESH_INTERVAL_HOURS = 8
 DEFAULT_RELOAD_INTERVAL_SEC = 30
 DEFAULT_SAVE_DELAY_MS = 500
 DEFAULT_USAGE_FLUSH_INTERVAL_SEC = 5
+DEFAULT_SOFT_COOLING_SECONDS = 30
 SUPER_WINDOW_THRESHOLD_SECONDS = 14400
 
 def _default_quota_for_pool(pool_name: str) -> int:
@@ -216,6 +217,36 @@ class TokenManager:
                     except (TypeError, ValueError):
                         return None
         return None
+
+    def _soft_cooling_ms(self) -> int:
+        value = get_config("token.soft_cooling_seconds", DEFAULT_SOFT_COOLING_SECONDS)
+        try:
+            seconds = max(0.0, float(value))
+        except Exception:
+            seconds = float(DEFAULT_SOFT_COOLING_SECONDS)
+        return int(seconds * 1000)
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(datetime.now().timestamp() * 1000)
+
+    @staticmethod
+    def _normalize_rate_limit_probe_result(
+        payload: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return dict(payload or {})
+
+    def _store_rate_limit_probe_result(
+        self,
+        token: TokenInfo,
+        payload: Optional[dict[str, Any]],
+        *,
+        checked_at: Optional[int] = None,
+    ) -> None:
+        token.set_rate_limit_probe_result(
+            self._normalize_rate_limit_probe_result(payload),
+            checked_at=checked_at,
+        )
 
     def _move_token_pool(
         self,
@@ -472,6 +503,7 @@ class TokenManager:
         resolution: str = "480p",
         video_length: int = 6,
         pool_candidates: Optional[List[str]] = None,
+        exclude: Optional[Set[str]] = None,
     ) -> Optional["TokenInfo"]:
         """
         根据视频需求智能选择 Token 池
@@ -506,7 +538,7 @@ class TokenManager:
                     ordered_pools.append(pool_name)
 
         for idx, pool_name in enumerate(ordered_pools):
-            token_info = self.get_token_info(pool_name)
+            token_info = self.get_token_info(pool_name, exclude=exclude)
             if token_info:
                 if idx == 0:
                     logger.info(
@@ -598,6 +630,84 @@ class TokenManager:
         self._track_token_change(token, pool_name, "state")
         self._schedule_save()
         return True
+
+    async def clear_rate_limit_soft_state(
+        self,
+        token_str: str,
+        *,
+        probe_result: Optional[dict[str, Any]] = None,
+        checked_at: Optional[int] = None,
+    ) -> bool:
+        raw_token = token_str.removeprefix("sso=")
+
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if not token:
+                continue
+            token.clear_soft_rate_limit()
+            if probe_result is not None:
+                self._store_rate_limit_probe_result(
+                    token,
+                    probe_result,
+                    checked_at=checked_at,
+                )
+            self._track_token_change(token, pool.name, "state")
+            self._schedule_save()
+            return True
+
+        logger.warning(f"Token {raw_token[:10]}...: not found for soft cooling clear")
+        return False
+
+    async def mark_rate_limited_soft(
+        self,
+        token_str: str,
+        *,
+        duration_seconds: Optional[float] = None,
+        probe_result: Optional[dict[str, Any]] = None,
+        checked_at: Optional[int] = None,
+    ) -> bool:
+        raw_token = token_str.removeprefix("sso=")
+        now_ms = self._now_ms()
+        if duration_seconds is None:
+            duration_ms = self._soft_cooling_ms()
+        else:
+            try:
+                duration_ms = int(max(0.0, float(duration_seconds)) * 1000)
+            except Exception:
+                duration_ms = self._soft_cooling_ms()
+        until_ms = now_ms + duration_ms
+
+        for pool in self.pools.values():
+            token = pool.get(raw_token)
+            if not token:
+                continue
+            if token.status == TokenStatus.COOLING:
+                if probe_result is not None:
+                    self._store_rate_limit_probe_result(
+                        token,
+                        probe_result,
+                        checked_at=checked_at or now_ms,
+                    )
+                self._track_token_change(token, pool.name, "state")
+                self._schedule_save()
+                return True
+
+            token.set_soft_rate_limit(until_ms)
+            self._store_rate_limit_probe_result(
+                token,
+                probe_result,
+                checked_at=checked_at or now_ms,
+            )
+            logger.warning(
+                f"Token {raw_token[:10]}...: entered soft cooling "
+                f"(until={until_ms}, status={token.status})"
+            )
+            self._track_token_change(token, pool.name, "state")
+            self._schedule_save()
+            return True
+
+        logger.warning(f"Token {raw_token[:10]}...: not found for soft cooling")
+        return False
 
     async def consume(
         self, token_str: str, effort: EffortType = EffortType.LOW
@@ -822,7 +932,14 @@ class TokenManager:
         logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
         return False
 
-    async def mark_rate_limited(self, token_str: str) -> bool:
+    async def mark_rate_limited(
+        self,
+        token_str: str,
+        *,
+        wait_time_seconds: Optional[int] = None,
+        probe_result: Optional[dict[str, Any]] = None,
+        checked_at: Optional[int] = None,
+    ) -> bool:
         """
         将 Token 标记为配额耗尽（COOLING）
 
@@ -836,16 +953,31 @@ class TokenManager:
             是否成功
         """
         raw_token = token_str.removeprefix("sso=")
+        now_ms = self._now_ms()
 
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
                 old_quota = token.quota
                 token.quota = 0
-                token.enter_cooling()
+                try:
+                    wait_seconds = (
+                        None
+                        if wait_time_seconds is None
+                        else max(0, int(wait_time_seconds))
+                    )
+                except (TypeError, ValueError):
+                    wait_seconds = None
+                until_ms = None if not wait_seconds else now_ms + wait_seconds * 1000
+                token.enter_cooling(until_ms=until_ms)
+                self._store_rate_limit_probe_result(
+                    token,
+                    probe_result,
+                    checked_at=checked_at or now_ms,
+                )
                 logger.warning(
                     f"Token {raw_token[:10]}...: marked as rate limited "
-                    f"(quota {old_quota} -> 0, status -> cooling)"
+                    f"(quota {old_quota} -> 0, status -> cooling, wait={wait_seconds})"
                 )
                 self._track_token_change(token, pool.name, "state")
                 self._schedule_save()

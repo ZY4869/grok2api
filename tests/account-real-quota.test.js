@@ -126,3 +126,32 @@ test("getRealQuotaState hides partial refresh warnings when live quota exists", 
   assert.equal(state.note, "");
   assert.equal(state.rows[0][0].value, "88/1000");
 });
+
+test("getRealQuotaState exposes soft-cooling and probe details", () => {
+  const now = Date.now();
+  const state = realQuota.getRealQuotaState({
+    status: "active",
+    suspected_rate_limited_until: now + 60_000,
+    last_rate_limit_probe_at: now - 5_000,
+    last_rate_limit_probe_result: {
+      action: "retry_same_token",
+      remaining_queries: 3,
+      wait_time_seconds: 0,
+    },
+    real_tier: "SUBSCRIPTION_TIER_GROK_PRO",
+    real_quota: {
+      subscription_name: "SuperGrok",
+      rate_limits: {
+        "grok-3": { remainingTokens: 88, totalTokens: 1000 },
+      },
+    },
+    last_real_quota_check_at: now - 10_000,
+    last_real_quota_error: "",
+  });
+
+  assert.match(state.note, /soft-cooling until/);
+  assert.match(state.note, /probe retry_same_token/);
+  assert.match(state.title, /soft-cooling until:/);
+  assert.match(state.title, /probe action: retry_same_token/);
+  assert.match(state.title, /probe remaining: 3/);
+});
