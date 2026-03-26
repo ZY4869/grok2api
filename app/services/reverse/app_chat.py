@@ -132,7 +132,7 @@ class AppChatReverse:
 
         if strategy == APP_CHAT_REQUEST_MODE_ID:
             payload["modeId"] = mode
-            payload["enable420"] = False
+            payload["enable420"] = bool(get_config("app.auto_enable_420", True))
             payload["responseMetadata"] = {}
         elif strategy == APP_CHAT_REQUEST_MODEL_ID_AUTO:
             payload["responseMetadata"] = {
@@ -205,6 +205,7 @@ class AppChatReverse:
                 "model": payload.get("modelName"),
                 "mode": payload.get("modelMode"),
                 "mode_id": payload.get("modeId"),
+                "enable_420": payload.get("enable420"),
                 "request_strategy": _resolve_request_strategy(
                     use_mode_id, request_strategy
                 ),

@@ -15,11 +15,19 @@ from app.core.auth import (
 )
 from app.core.call_log import begin_call_log, log_call_failure
 from app.core.config import get_config
+from app.core.exceptions import AppException, ErrorType
 from app.core.logger import logger
 from app.api.v1.image import resolve_aspect_ratio
 from app.services.grok.services.image import ImageGenerationService
 from app.services.grok.services.model import ModelService
 from app.services.token.manager import get_token_manager
+from app.services.token.quota import (
+    IMAGE_LIMIT_ERROR_CODE,
+    all_candidate_tokens_exhausted,
+    image_limit_exception,
+    quota_requirement_for_model,
+    select_token_for_requirement,
+)
 
 router = APIRouter()
 
@@ -115,6 +123,30 @@ async def _drop_sessions(task_ids: List[str]) -> int:
     return removed
 
 
+async def _select_imagine_token(token_mgr, model_id: str) -> str:
+    exhausted_tokens: set[str] = set()
+    requirement = quota_requirement_for_model(model_id)
+    selection = await select_token_for_requirement(
+        token_mgr,
+        model_id,
+        tried=set(),
+        requirement=requirement,
+        exhausted_tokens=exhausted_tokens,
+    )
+    if selection.token:
+        return selection.token
+    if requirement and all_candidate_tokens_exhausted(
+        selection.total_candidates, exhausted_tokens
+    ):
+        raise image_limit_exception(selection.total_candidates)
+    raise AppException(
+        message="No available tokens. Please try again later.",
+        error_type=ErrorType.RATE_LIMIT.value,
+        code="rate_limit_exceeded",
+        status_code=429,
+    )
+
+
 @router.websocket("/imagine/ws")
 async def function_imagine_ws(websocket: WebSocket):
     session_id = None
@@ -191,26 +223,22 @@ async def function_imagine_ws(websocket: WebSocket):
             try:
                 begin_call_log("function.imagine", model=model_id)
                 await token_mgr.reload_if_stale()
-                token = None
-                for pool_name in ModelService.pool_candidates_for_model(
-                    model_info.model_id
-                ):
-                    token = token_mgr.get_token(pool_name)
-                    if token:
-                        break
-
-                if not token:
+                try:
+                    token = await _select_imagine_token(token_mgr, model_info.model_id)
+                except AppException as exc:
                     await log_call_failure(
-                        error_code="rate_limit_exceeded",
-                        error_message="No available tokens. Please try again later.",
+                        error_code=exc.code,
+                        error_message=exc.message,
                     )
                     await _send(
                         {
                             "type": "error",
-                            "message": "No available tokens. Please try again later.",
-                            "code": "rate_limit_exceeded",
+                            "message": exc.message,
+                            "code": exc.code,
                         }
                     )
+                    if exc.code == IMAGE_LIMIT_ERROR_CODE:
+                        break
                     await asyncio.sleep(2)
                     continue
 
@@ -262,6 +290,19 @@ async def function_imagine_ws(websocket: WebSocket):
 
             except asyncio.CancelledError:
                 break
+            except AppException as e:
+                logger.warning(f"Imagine stream app error: {e}")
+                await log_call_failure(e)
+                await _send(
+                    {
+                        "type": "error",
+                        "message": e.message,
+                        "code": e.code or "internal_error",
+                    }
+                )
+                if e.code == IMAGE_LIMIT_ERROR_CODE:
+                    break
+                await asyncio.sleep(1.5)
             except Exception as e:
                 logger.warning(f"Imagine stream error: {e}")
                 await log_call_failure(e)
@@ -414,22 +455,18 @@ async def function_imagine_sse(
                         model=model_id,
                     )
                     await token_mgr.reload_if_stale()
-                    token = None
-                    for pool_name in ModelService.pool_candidates_for_model(
-                        model_info.model_id
-                    ):
-                        token = token_mgr.get_token(pool_name)
-                        if token:
-                            break
-
-                    if not token:
+                    try:
+                        token = await _select_imagine_token(token_mgr, model_info.model_id)
+                    except AppException as exc:
                         await log_call_failure(
-                            error_code="rate_limit_exceeded",
-                            error_message="No available tokens. Please try again later.",
+                            error_code=exc.code,
+                            error_message=exc.message,
                         )
                         yield (
-                            f"data: {orjson.dumps({'type': 'error', 'message': 'No available tokens. Please try again later.', 'code': 'rate_limit_exceeded'}).decode()}\n\n"
+                            f"data: {orjson.dumps({'type': 'error', 'message': exc.message, 'code': exc.code}).decode()}\n\n"
                         )
+                        if exc.code == IMAGE_LIMIT_ERROR_CODE:
+                            break
                         await asyncio.sleep(2)
                         continue
 
@@ -477,6 +514,15 @@ async def function_imagine_sse(
                             )
                 except asyncio.CancelledError:
                     break
+                except AppException as e:
+                    logger.warning(f"Imagine SSE app error: {e}")
+                    await log_call_failure(e)
+                    yield (
+                        f"data: {orjson.dumps({'type': 'error', 'message': e.message, 'code': e.code or 'internal_error'}).decode()}\n\n"
+                    )
+                    if e.code == IMAGE_LIMIT_ERROR_CODE:
+                        break
+                    await asyncio.sleep(1.5)
                 except Exception as e:
                     logger.warning(f"Imagine SSE error: {e}")
                     await log_call_failure(e)

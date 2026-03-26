@@ -29,12 +29,19 @@ from app.services.grok.utils.process import (
     _with_idle_timeout,
 )
 from app.services.grok.utils.upload import UploadService
-from app.services.grok.utils.retry import pick_token, rate_limited
+from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.video import VideoService
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
+from app.services.token.quota import (
+    all_candidate_tokens_exhausted,
+    confirm_quota_exhausted,
+    image_limit_exception,
+    quota_requirement_for_model,
+    select_token_for_requirement,
+)
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
@@ -45,6 +52,14 @@ APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     APP_CHAT_REQUEST_LEGACY_MODEL,
 )
+
+
+def _should_probe_image_limit(error: Exception) -> bool:
+    if not isinstance(error, UpstreamException):
+        return False
+    details = error.details if isinstance(error.details, dict) else {}
+    marker = details.get("error")
+    return rate_limited(error) or marker == "empty_result"
 
 
 @dataclass
@@ -78,49 +93,66 @@ class ImageEditService:
 
         max_token_retries = int(get_config("retry.max_retry") or 3)
         tried_tokens: set[str] = set()
+        exhausted_tokens: set[str] = set()
         last_error: Exception | None = None
+        quota_requirement = quota_requirement_for_model(model_info.model_id)
 
-        for attempt in range(max_token_retries):
-            preferred = token if attempt == 0 else None
-            current_token = await pick_token(
-                token_mgr, model_info.model_id, tried_tokens, preferred=preferred
-            )
-            if not current_token:
-                if last_error:
-                    raise last_error
-                raise AppException(
-                    message="No available tokens. Please try again later.",
-                    error_type=ErrorType.RATE_LIMIT.value,
-                    code="rate_limit_exceeded",
-                    status_code=429,
-                )
+        async def _prepare_request(current_token: str) -> tuple[dict, dict]:
+            image_urls = await self._upload_images(images, current_token)
+            parent_post_id = await self._get_parent_post_id(current_token, image_urls)
 
-            tried_tokens.add(current_token)
-            try:
-                image_urls = await self._upload_images(images, current_token)
-                parent_post_id = await self._get_parent_post_id(
-                    current_token, image_urls
-                )
-
-                model_config_override = {
-                    "modelMap": {
-                        "imageEditModel": "imagine",
-                        "imageEditModelConfig": {
-                            "imageReferences": image_urls,
-                        },
-                    }
+            model_config_override = {
+                "modelMap": {
+                    "imageEditModel": "imagine",
+                    "imageEditModelConfig": {
+                        "imageReferences": image_urls,
+                    },
                 }
-                if parent_post_id:
-                    model_config_override["modelMap"]["imageEditModelConfig"][
-                        "parentPostId"
-                    ] = parent_post_id
+            }
+            if parent_post_id:
+                model_config_override["modelMap"]["imageEditModelConfig"][
+                    "parentPostId"
+                ] = parent_post_id
+            return {"imageGen": True}, model_config_override
 
-                tool_overrides = {"imageGen": True}
+        def _raise_no_token(selection_total: int) -> None:
+            if quota_requirement and all_candidate_tokens_exhausted(
+                selection_total, exhausted_tokens
+            ):
+                raise image_limit_exception(selection_total)
+            if last_error:
+                raise last_error
+            raise AppException(
+                message="No available tokens. Please try again later.",
+                error_type=ErrorType.RATE_LIMIT.value,
+                code="rate_limit_exceeded",
+                status_code=429,
+            )
 
-                if stream:
-                    return ImageEditResult(
-                        stream=True,
-                        data=wrap_stream_with_usage(
+        if stream:
+
+            async def _stream_retry():
+                nonlocal last_error
+                for attempt in range(max_token_retries):
+                    preferred = token if attempt == 0 else None
+                    selection = await select_token_for_requirement(
+                        token_mgr,
+                        model_info.model_id,
+                        tried=tried_tokens,
+                        preferred=preferred,
+                        requirement=quota_requirement,
+                        exhausted_tokens=exhausted_tokens,
+                    )
+                    current_token = selection.token
+                    if not current_token:
+                        _raise_no_token(selection.total_candidates)
+
+                    tried_tokens.add(current_token)
+                    try:
+                        tool_overrides, model_config_override = await _prepare_request(
+                            current_token
+                        )
+                        wrapped = wrap_stream_with_usage(
                             self._stream_with_fallback(
                                 token=current_token,
                                 prompt=prompt,
@@ -134,9 +166,100 @@ class ImageEditService:
                             token_mgr,
                             current_token,
                             model_info.model_id,
-                        ),
-                    )
+                        )
+                        yielded = False
+                        async for chunk in wrapped:
+                            yielded = True
+                            yield chunk
+                        if not yielded:
+                            if quota_requirement and await confirm_quota_exhausted(
+                                token_mgr,
+                                current_token,
+                                quota_requirement,
+                                exhausted_tokens,
+                            ):
+                                if all_candidate_tokens_exhausted(
+                                    selection.total_candidates, exhausted_tokens
+                                ):
+                                    raise image_limit_exception(selection.total_candidates)
+                                logger.warning(
+                                    "Image edit stream attempt ended without chunks; trying next token",
+                                    extra={
+                                        "model": model_info.model_id,
+                                        "attempt": attempt + 1,
+                                        "token": f"{current_token[:10]}...",
+                                    },
+                                )
+                                continue
+                            last_error = UpstreamException(
+                                "Image edit returned no stream chunks",
+                                details={"error": "empty_stream"},
+                            )
+                            if attempt + 1 < max_token_retries:
+                                continue
+                            raise last_error
+                        return
+                    except UpstreamException as e:
+                        last_error = e
+                        if quota_requirement and _should_probe_image_limit(e):
+                            if await confirm_quota_exhausted(
+                                token_mgr,
+                                current_token,
+                                quota_requirement,
+                                exhausted_tokens,
+                            ):
+                                if all_candidate_tokens_exhausted(
+                                    selection.total_candidates, exhausted_tokens
+                                ):
+                                    raise image_limit_exception(selection.total_candidates)
+                                logger.warning(
+                                    "Image edit stream token hit quota limit, trying next token",
+                                    extra={
+                                        "model": model_info.model_id,
+                                        "attempt": attempt + 1,
+                                        "token": f"{current_token[:10]}...",
+                                    },
+                                )
+                                continue
+                        if rate_limited(e):
+                            await token_mgr.mark_rate_limited(current_token)
+                            logger.warning(
+                                f"Token {current_token[:10]}... rate limited (429), "
+                                f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                            )
+                            continue
+                        raise
 
+                if last_error:
+                    raise last_error
+                raise AppException(
+                    message="No available tokens. Please try again later.",
+                    error_type=ErrorType.RATE_LIMIT.value,
+                    code="rate_limit_exceeded",
+                    status_code=429,
+                )
+
+            return ImageEditResult(stream=True, data=_stream_retry())
+
+        for attempt in range(max_token_retries):
+            preferred = token if attempt == 0 else None
+            selection = await select_token_for_requirement(
+                token_mgr,
+                model_info.model_id,
+                tried=tried_tokens,
+                preferred=preferred,
+                requirement=quota_requirement,
+                exhausted_tokens=exhausted_tokens,
+            )
+            current_token = selection.token
+            if not current_token:
+                _raise_no_token(selection.total_candidates)
+
+            tried_tokens.add(current_token)
+            try:
+                tool_overrides, model_config_override = await _prepare_request(
+                    current_token
+                )
                 images_out = await self._collect_images(
                     token=current_token,
                     prompt=prompt,
@@ -159,9 +282,28 @@ class ImageEditService:
                 except Exception as e:
                     logger.warning(f"Failed to record image edit usage: {e}")
                 return ImageEditResult(stream=False, data=images_out)
-
             except UpstreamException as e:
                 last_error = e
+                if quota_requirement and _should_probe_image_limit(e):
+                    if await confirm_quota_exhausted(
+                        token_mgr,
+                        current_token,
+                        quota_requirement,
+                        exhausted_tokens,
+                    ):
+                        if all_candidate_tokens_exhausted(
+                            selection.total_candidates, exhausted_tokens
+                        ):
+                            raise image_limit_exception(selection.total_candidates)
+                        logger.warning(
+                            "Image edit token hit quota limit, trying next token",
+                            extra={
+                                "model": model_info.model_id,
+                                "attempt": attempt + 1,
+                                "token": f"{current_token[:10]}...",
+                            },
+                        )
+                        continue
                 if rate_limited(e):
                     await token_mgr.mark_rate_limited(current_token)
                     logger.warning(

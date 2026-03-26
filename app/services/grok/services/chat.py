@@ -5,7 +5,8 @@ Grok Chat 服务
 import asyncio
 import re
 import uuid
-from typing import Dict, List, Any, AsyncGenerator, AsyncIterable
+from dataclasses import dataclass
+from typing import Dict, List, Any, AsyncGenerator, AsyncIterable, Optional
 
 import orjson
 from curl_cffi.requests.errors import RequestsError
@@ -37,6 +38,13 @@ from app.services.token.model_access import (
     model_requires_special_subscription,
 )
 from app.services.token import get_token_manager, EffortType
+from app.services.token.quota import (
+    all_candidate_tokens_exhausted,
+    auto_image_quota_requirement,
+    confirm_quota_exhausted,
+    image_limit_exception,
+    select_token_for_requirement,
+)
 
 
 _CHAT_SEMAPHORE = None
@@ -388,6 +396,191 @@ class GrokChatService:
         return response, stream, model
 
 
+_AUTO_IMAGE_INTENT_PATTERNS = (
+    re.compile(
+        r"\b(generate|create|make|draw|paint|illustrate|render|design)\b.{0,24}\b(image|picture|photo|art|illustration|poster|avatar|wallpaper|logo)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(image|picture|photo|art|illustration|poster|avatar|wallpaper|logo)\b.{0,24}\b(of|for|showing|with)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(生图|出图|画图|绘图|生成图|生成图片|生成图像|做图|画一张|画个|来一张图|给我一张图|帮我生成)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(生成|制作|画|绘制|绘画|来|帮我).{0,10}(一张|一个|几张|些)?(图片|图像|照片|插画|海报|头像|壁纸|配图|表情包|图)",
+        re.IGNORECASE,
+    ),
+)
+_AUTO_IMAGE_MARKDOWN_RE = re.compile(r"!\[[^\]]*]\(([^)]+)\)")
+_AUTO_IMAGE_BUFFER_LINE_LIMIT = 48
+_AUTO_IMAGE_BUFFER_BYTE_LIMIT = 65536
+
+
+@dataclass
+class AutoImageStreamProbe:
+    stream: AsyncGenerator[str, None]
+    stream_completed: bool
+    found_image_refs: bool
+    has_streaming_image_event: bool
+
+
+def _extract_last_user_text(messages: List[Dict[str, Any]]) -> str:
+    for msg in reversed(messages or []):
+        if (msg.get("role") or "user") != "user":
+            continue
+        content = msg.get("content")
+        texts: list[str] = []
+        if isinstance(content, str):
+            text = content.strip()
+            if text:
+                texts.append(text)
+        elif isinstance(content, dict):
+            content = [content]
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "text":
+                    continue
+                text = str(item.get("text") or "").strip()
+                if text:
+                    texts.append(text)
+        combined = "\n".join(texts).strip()
+        if combined:
+            return combined
+    return ""
+
+
+def _looks_like_auto_image_prompt(messages: List[Dict[str, Any]]) -> bool:
+    text = _extract_last_user_text(messages)
+    if not text:
+        return False
+    compact = re.sub(r"\s+", " ", text).strip()
+    return any(pattern.search(compact) for pattern in _AUTO_IMAGE_INTENT_PATTERNS)
+
+
+def _chat_result_has_rendered_image(result: Dict[str, Any]) -> bool:
+    choices = result.get("choices") or []
+    if not choices:
+        return False
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, str) or not content:
+        return False
+    return bool(_AUTO_IMAGE_MARKDOWN_RE.search(content)) or "/v1/files/image/" in content
+
+
+def _should_probe_auto_image_limit(error: Exception) -> bool:
+    if not isinstance(error, UpstreamException):
+        return False
+    details = error.details if isinstance(error.details, dict) else {}
+    marker = details.get("error")
+    code = details.get("error_code")
+    return rate_limited(error) or marker in {"empty_result", "empty_stream"} or code == "blocked_no_final_image"
+
+
+async def _consume_chat_usage(token_mgr, token: str, model: str) -> None:
+    try:
+        model_info = ModelService.get(model)
+        effort = (
+            EffortType.HIGH
+            if (model_info and model_info.cost.value == "high")
+            else EffortType.LOW
+        )
+        await token_mgr.consume(token, effort)
+        logger.info(f"Chat completed: model={model}, effort={effort.value}")
+    except Exception as e:
+        logger.warning(f"Failed to record usage: {e}")
+
+
+def _iter_raw_stream(
+    prefetched: List[bytes], iterator: Any
+) -> AsyncGenerator[bytes, None]:
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        for item in prefetched:
+            yield item
+        async for item in iterator:
+            yield item
+
+    return _gen()
+
+
+def _inspect_stream_line(raw_line: Any) -> tuple[bool, bool]:
+    line = proc_base._normalize_line(raw_line)
+    if not line:
+        return False, False
+    try:
+        data = orjson.loads(line)
+    except orjson.JSONDecodeError:
+        return False, False
+    resp = data.get("result", {}).get("response", {})
+    has_streaming_image_event = bool(resp.get("streamingImageGenerationResponse"))
+    has_refs = bool(proc_base._collect_image_references(resp))
+    return has_refs, has_streaming_image_event
+
+
+async def _probe_auto_image_stream(
+    response: AsyncIterable[bytes],
+    *,
+    model_name: str,
+    token: str,
+    show_think: bool,
+    tools: List[Dict[str, Any]] = None,
+    tool_choice: Any = None,
+) -> AutoImageStreamProbe:
+    iterator = response.__aiter__()
+    prefetched: list[bytes] = []
+    prefetched_bytes = 0
+    found_image_refs = False
+    has_streaming_image_event = False
+    stream_completed = False
+
+    while True:
+        try:
+            raw_line = await iterator.__anext__()
+        except StopAsyncIteration:
+            stream_completed = True
+            break
+
+        prefetched.append(raw_line)
+        if isinstance(raw_line, (bytes, bytearray)):
+            prefetched_bytes += len(raw_line)
+        else:
+            prefetched_bytes += len(str(raw_line).encode("utf-8", errors="ignore"))
+
+        line_has_refs, line_has_streaming_event = _inspect_stream_line(raw_line)
+        found_image_refs = found_image_refs or line_has_refs
+        has_streaming_image_event = has_streaming_image_event or line_has_streaming_event
+
+        if found_image_refs:
+            break
+        if (
+            not has_streaming_image_event
+            and (
+                len(prefetched) >= _AUTO_IMAGE_BUFFER_LINE_LIMIT
+                or prefetched_bytes >= _AUTO_IMAGE_BUFFER_BYTE_LIMIT
+            )
+        ):
+            break
+
+    processor = StreamProcessor(
+        model_name,
+        token,
+        show_think,
+        tools=tools,
+        tool_choice=tool_choice,
+    )
+    return AutoImageStreamProbe(
+        stream=processor.process(_iter_raw_stream(prefetched, iterator)),
+        stream_completed=stream_completed,
+        found_image_refs=found_image_refs,
+        has_streaming_image_event=has_streaming_image_event,
+    )
+
+
 class ChatService:
     """Chat 业务服务"""
 
@@ -424,24 +617,48 @@ class ChatService:
         else:
             show_think = reasoning_effort != "none"
         is_stream = stream if stream is not None else get_config("app.stream")
+        auto_image_intent = model == "grok-auto" and _looks_like_auto_image_prompt(messages)
+        quota_requirement = (
+            auto_image_quota_requirement() if auto_image_intent else None
+        )
 
         # 跨 Token 重试循环
-        tried_tokens = set()
+        tried_tokens: set[str] = set()
+        exhausted_tokens: set[str] = set()
         max_token_retries = int(get_config("retry.max_retry") or 3)
-        last_error = None
+        last_error: Exception | None = None
+
+        def _raise_no_token(total_candidates: int = 0) -> None:
+            if quota_requirement and all_candidate_tokens_exhausted(
+                total_candidates, exhausted_tokens
+            ):
+                raise image_limit_exception(total_candidates)
+            if last_error:
+                raise last_error
+            raise AppException(
+                message="No available tokens. Please try again later.",
+                error_type=ErrorType.RATE_LIMIT.value,
+                code="rate_limit_exceeded",
+                status_code=429,
+            )
 
         for attempt in range(max_token_retries):
             # 选择 token
-            token = await pick_token(token_mgr, model, tried_tokens)
-            if not token:
-                if last_error:
-                    raise last_error
-                raise AppException(
-                    message="No available tokens. Please try again later.",
-                    error_type=ErrorType.RATE_LIMIT.value,
-                    code="rate_limit_exceeded",
-                    status_code=429,
+            selection_total = 0
+            if quota_requirement:
+                selection = await select_token_for_requirement(
+                    token_mgr,
+                    model,
+                    tried=tried_tokens,
+                    requirement=quota_requirement,
+                    exhausted_tokens=exhausted_tokens,
                 )
+                token = selection.token
+                selection_total = selection.total_candidates
+            else:
+                token = await pick_token(token_mgr, model, tried_tokens)
+            if not token:
+                _raise_no_token(selection_total)
 
             tried_tokens.add(token)
 
@@ -464,29 +681,122 @@ class ChatService:
                 # 处理响应
                 if is_stream:
                     logger.debug(f"Processing stream response: model={model}")
-                    processor = StreamProcessor(model_name, token, show_think, tools=tools, tool_choice=tool_choice)
+                    if quota_requirement:
+                        probed_stream = await _probe_auto_image_stream(
+                            response,
+                            model_name=model_name,
+                            token=token,
+                            show_think=show_think,
+                            tools=tools,
+                            tool_choice=tool_choice,
+                        )
+                        if (
+                            probed_stream.stream_completed
+                            and not probed_stream.found_image_refs
+                        ):
+                            logger.warning(
+                                "Auto image stream finished without rendered image",
+                                extra={
+                                    "model": model,
+                                    "token": f"{token[:10]}...",
+                                    "has_streaming_image_event": probed_stream.has_streaming_image_event,
+                                },
+                            )
+                            if await confirm_quota_exhausted(
+                                token_mgr,
+                                token,
+                                quota_requirement,
+                                exhausted_tokens,
+                            ):
+                                if all_candidate_tokens_exhausted(
+                                    selection_total, exhausted_tokens
+                                ):
+                                    raise image_limit_exception(selection_total)
+                                logger.warning(
+                                    "Auto image stream token hit quota limit, trying next token",
+                                    extra={
+                                        "model": model,
+                                        "attempt": attempt + 1,
+                                        "token": f"{token[:10]}...",
+                                    },
+                                )
+                                continue
+                        return wrap_stream_with_usage(
+                            probed_stream.stream, token_mgr, token, model
+                        )
+
+                    processor = StreamProcessor(
+                        model_name,
+                        token,
+                        show_think,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
                     return wrap_stream_with_usage(
                         processor.process(response), token_mgr, token, model
                     )
 
                 # 非流式
                 logger.debug(f"Processing non-stream response: model={model}")
-                result = await CollectProcessor(model_name, token, tools=tools, tool_choice=tool_choice).process(response)
-                try:
-                    model_info = ModelService.get(model)
-                    effort = (
-                        EffortType.HIGH
-                        if (model_info and model_info.cost.value == "high")
-                        else EffortType.LOW
+                result = await CollectProcessor(
+                    model_name,
+                    token,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                ).process(response)
+                if quota_requirement and not _chat_result_has_rendered_image(result):
+                    logger.warning(
+                        "Auto image collect finished without rendered image",
+                        extra={
+                            "model": model,
+                            "token": f"{token[:10]}...",
+                        },
                     )
-                    await token_mgr.consume(token, effort)
-                    logger.info(f"Chat completed: model={model}, effort={effort.value}")
-                except Exception as e:
-                    logger.warning(f"Failed to record usage: {e}")
+                    if await confirm_quota_exhausted(
+                        token_mgr,
+                        token,
+                        quota_requirement,
+                        exhausted_tokens,
+                    ):
+                        if all_candidate_tokens_exhausted(
+                            selection_total, exhausted_tokens
+                        ):
+                            raise image_limit_exception(selection_total)
+                        logger.warning(
+                            "Auto image collect token hit quota limit, trying next token",
+                            extra={
+                                "model": model,
+                                "attempt": attempt + 1,
+                                "token": f"{token[:10]}...",
+                            },
+                        )
+                        continue
+                await _consume_chat_usage(token_mgr, token, model)
                 return result
 
             except UpstreamException as e:
                 last_error = e
+
+                if quota_requirement and _should_probe_auto_image_limit(e):
+                    if await confirm_quota_exhausted(
+                        token_mgr,
+                        token,
+                        quota_requirement,
+                        exhausted_tokens,
+                    ):
+                        if all_candidate_tokens_exhausted(
+                            selection_total, exhausted_tokens
+                        ):
+                            raise image_limit_exception(selection_total)
+                        logger.warning(
+                            "Auto image request hit quota limit, trying next token",
+                            extra={
+                                "model": model,
+                                "attempt": attempt + 1,
+                                "token": f"{token[:10]}...",
+                            },
+                        )
+                        continue
 
                 if rate_limited(e):
                     # 配额不足，标记 token 为 cooling 并换 token 重试
@@ -500,7 +810,7 @@ class ChatService:
                 if transient_upstream(e):
                     has_alternative_token = token_mgr.has_available_token_for_model(
                         model,
-                        exclude=tried_tokens,
+                        exclude=tried_tokens | exhausted_tokens,
                     )
                     if not has_alternative_token:
                         raise
@@ -522,6 +832,64 @@ class ChatService:
             code="rate_limit_exceeded",
             status_code=429,
         )
+
+
+def _image_id_from_url(url: str) -> str:
+    parts = [part for part in (url or "").split("/") if part]
+    if len(parts) >= 2 and "." in parts[-1]:
+        return parts[-2]
+    if parts:
+        return parts[-1]
+    return "image"
+
+
+def _image_log_extra(
+    model: str,
+    refs: List[proc_base.ImageReference],
+    *,
+    has_streaming_image_event: bool,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "source_shape": ",".join(sorted({ref.source_shape for ref in refs})),
+        "image_ref_count": len(refs),
+        "has_streaming_image_event": has_streaming_image_event,
+    }
+
+
+async def _render_chat_image_refs(
+    processor: proc_base.BaseProcessor,
+    refs: List[proc_base.ImageReference],
+    seen_urls: set[str],
+    *,
+    has_streaming_image_event: bool,
+) -> list[str]:
+    if not refs:
+        return []
+
+    logger.debug(
+        "Chat parsed upstream images",
+        extra=_image_log_extra(
+            processor.model,
+            refs,
+            has_streaming_image_event=has_streaming_image_event,
+        ),
+    )
+
+    outputs: list[str] = []
+    dl_service = processor._get_dl()
+    for ref in refs:
+        if ref.url in seen_urls:
+            continue
+        seen_urls.add(ref.url)
+        rendered = await dl_service.render_image(
+            ref.url,
+            processor.token,
+            _image_id_from_url(ref.url),
+        )
+        if rendered:
+            outputs.append(rendered)
+    return outputs
 
 
 class StreamProcessor(proc_base.BaseProcessor):
@@ -552,6 +920,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         self._tool_partial = ""
         self._tool_calls_seen = False
         self._tool_call_index = 0
+        self._seen_image_urls: set[str] = set()
 
     def _with_tool_index(self, tool_call: Any) -> Any:
         if not isinstance(tool_call, dict):
@@ -735,6 +1104,13 @@ class StreamProcessor(proc_base.BaseProcessor):
         }
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
+    def _close_think_chunk(self) -> Optional[str]:
+        if not self.think_opened:
+            return None
+        self.think_opened = False
+        self.think_closed_once = True
+        return self._sse("\n</think>\n")
+
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """Process stream response.
 
@@ -775,9 +1151,36 @@ class StreamProcessor(proc_base.BaseProcessor):
                     self.role_sent = True
 
                 if img := resp.get("streamingImageGenerationResponse"):
-                    if not self.show_think:
+                    refs = proc_base._collect_image_references(
+                        {"streamingImageGenerationResponse": img}
+                    )
+                    if refs:
+                        close_chunk = self._close_think_chunk()
+                        if close_chunk:
+                            yield close_chunk
+                        self.image_think_active = False
+                        for rendered in await _render_chat_image_refs(
+                            self,
+                            refs,
+                            self._seen_image_urls,
+                            has_streaming_image_event=True,
+                        ):
+                            yield self._sse(f"{rendered}\n")
                         continue
-                    self.image_think_active = True
+                    elif not self.show_think:
+                        logger.warning(
+                            "Chat stream saw streaming image event without image refs",
+                            extra={
+                                "model": self.model,
+                                "source_shape": "",
+                                "image_ref_count": 0,
+                                "has_streaming_image_event": True,
+                            },
+                        )
+                        self.image_think_active = False
+                        continue
+                    else:
+                        self.image_think_active = True
                     if not self.think_opened:
                         yield self._sse("<think>\n")
                         self.think_opened = True
@@ -789,18 +1192,16 @@ class StreamProcessor(proc_base.BaseProcessor):
                     continue
 
                 if mr := resp.get("modelResponse"):
-                    if self.image_think_active and self.think_opened:
-                        yield self._sse("\n</think>\n")
-                        self.think_opened = False
-                        self.think_closed_once = True
+                    close_chunk = self._close_think_chunk()
+                    if close_chunk:
+                        yield close_chunk
                     self.image_think_active = False
-                    for url in proc_base._collect_images(mr):
-                        parts = url.split("/")
-                        img_id = parts[-2] if len(parts) >= 2 else "image"
-                        dl_service = self._get_dl()
-                        rendered = await dl_service.render_image(
-                            url, self.token, img_id
-                        )
+                    for rendered in await _render_chat_image_refs(
+                        self,
+                        proc_base._collect_image_references(mr),
+                        self._seen_image_urls,
+                        has_streaming_image_event=False,
+                    ):
                         yield self._sse(f"{rendered}\n")
 
                     if (
@@ -822,7 +1223,8 @@ class StreamProcessor(proc_base.BaseProcessor):
                             image = card_data.get("image") or {}
                             original = image.get("original")
                             title = image.get("title") or ""
-                            if original:
+                            if original and original not in self._seen_image_urls:
+                                self._seen_image_urls.add(original)
                                 title_safe = title.replace("\n", " ").strip()
                                 if title_safe:
                                     yield self._sse(f"![{title_safe}]({original})\n")
@@ -967,6 +1369,8 @@ class CollectProcessor(proc_base.BaseProcessor):
         response_id = ""
         fingerprint = ""
         content = ""
+        streaming_outputs: list[str] = []
+        seen_image_urls: set[str] = set()
         idle_timeout = get_config("chat.stream_timeout")
 
         try:
@@ -985,6 +1389,30 @@ class CollectProcessor(proc_base.BaseProcessor):
 
                 if (llm := resp.get("llmInfo")) and not fingerprint:
                     fingerprint = llm.get("modelHash", "")
+
+                if img := resp.get("streamingImageGenerationResponse"):
+                    refs = proc_base._collect_image_references(
+                        {"streamingImageGenerationResponse": img}
+                    )
+                    if refs:
+                        streaming_outputs.extend(
+                            await _render_chat_image_refs(
+                                self,
+                                refs,
+                                seen_image_urls,
+                                has_streaming_image_event=True,
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            "Chat collect saw streaming image event without image refs",
+                            extra={
+                                "model": self.model,
+                                "source_shape": "",
+                                "image_ref_count": 0,
+                                "has_streaming_image_event": True,
+                            },
+                        )
 
                 if mr := resp.get("modelResponse"):
                     response_id = mr.get("responseId", "")
@@ -1015,6 +1443,7 @@ class CollectProcessor(proc_base.BaseProcessor):
                             if not item:
                                 return ""
                             title, original = item
+                            seen_image_urls.add(original)
                             title_safe = title.replace("\n", " ").strip() or "image"
                             prefix = ""
                             if match.start() > 0:
@@ -1030,16 +1459,27 @@ class CollectProcessor(proc_base.BaseProcessor):
                             flags=re.DOTALL,
                         )
 
-                    if urls := proc_base._collect_images(mr):
-                        content += "\n"
-                        for url in urls:
-                            parts = url.split("/")
-                            img_id = parts[-2] if len(parts) >= 2 else "image"
-                            dl_service = self._get_dl()
-                            rendered = await dl_service.render_image(
-                                url, self.token, img_id
+                    for rendered in await _render_chat_image_refs(
+                        self,
+                        proc_base._collect_image_references(mr),
+                        seen_image_urls,
+                        has_streaming_image_event=False,
+                    ):
+                        if content and not content.endswith("\n"):
+                            content += "\n"
+                        content += f"{rendered}\n"
+
+                    if card := resp.get("cardAttachment"):
+                        streaming_outputs.extend(
+                            await _render_chat_image_refs(
+                                self,
+                                proc_base._collect_image_references(
+                                    {"cardAttachment": card}
+                                ),
+                                seen_image_urls,
+                                has_streaming_image_event=False,
                             )
-                            content += f"{rendered}\n"
+                        )
 
                     if (
                         (meta := mr.get("metadata", {}))
@@ -1047,6 +1487,18 @@ class CollectProcessor(proc_base.BaseProcessor):
                         .get("modelHash")
                     ):
                         fingerprint = meta["llm_info"]["modelHash"]
+
+                if card := resp.get("cardAttachment"):
+                    streaming_outputs.extend(
+                        await _render_chat_image_refs(
+                            self,
+                            proc_base._collect_image_references(
+                                {"cardAttachment": card}
+                            ),
+                            seen_image_urls,
+                            has_streaming_image_event=False,
+                        )
+                    )
 
         except asyncio.CancelledError:
             logger.debug("Collect cancelled by client", extra={"model": self.model})
@@ -1084,6 +1536,13 @@ class CollectProcessor(proc_base.BaseProcessor):
             raise
         finally:
             await self.close()
+
+        if streaming_outputs:
+            if content and not content.endswith("\n"):
+                content += "\n"
+            content += "\n".join(streaming_outputs)
+            if not content.endswith("\n"):
+                content += "\n"
 
         content = self._filter_content(content)
 

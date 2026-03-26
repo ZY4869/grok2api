@@ -1,7 +1,9 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.services.grok.services.chat import GrokChatService
+import orjson
+
+from app.services.grok.services.chat import CollectProcessor, GrokChatService, StreamProcessor
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.process import _collect_image_references
@@ -10,6 +12,25 @@ from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     AppChatReverse,
 )
+
+
+async def _response_stream(*payloads):
+    for payload in payloads:
+        yield f"data: {orjson.dumps(payload).decode()}\n\n".encode()
+
+
+async def _render_image(*args, **kwargs):
+    url = args[-3]
+    image_id = args[-1] if args else kwargs.get("image_id", "image")
+    return f"![{image_id}]({url})"
+
+
+def _chat_config(key, default=None):
+    values = {
+        "app.filter_tags": [],
+        "chat.stream_timeout": 1,
+    }
+    return values.get(key, default)
 
 
 class AppChatProtocolPayloadTests(unittest.TestCase):
@@ -31,6 +52,26 @@ class AppChatProtocolPayloadTests(unittest.TestCase):
             payload["responseMetadata"]["modelConfigOverride"],
             {"temperature": 0.2},
         )
+
+    def test_build_payload_mode_id_defaults_enable420_to_true(self):
+        with patch(
+            "app.services.reverse.app_chat.get_config",
+            side_effect=lambda key, default=None: {
+                "app.custom_instruction": "",
+                "app.disable_memory": False,
+                "app.temporary": False,
+                "app.auto_enable_420": True,
+            }.get(key, default),
+        ):
+            payload = AppChatReverse.build_payload(
+                message="draw a cat",
+                model="grok-3",
+                mode="auto",
+                use_mode_id=True,
+            )
+
+        self.assertEqual(payload["modeId"], "auto")
+        self.assertTrue(payload["enable420"])
 
 
 class GrokChatProtocolForwardingTests(unittest.IsolatedAsyncioTestCase):
@@ -100,6 +141,32 @@ class ImageReferenceParsingTests(unittest.TestCase):
             {"card_image_chunk"},
         )
 
+    def test_collects_streaming_image_generation_urls(self):
+        refs = _collect_image_references(
+            {
+                "streamingImageGenerationResponse": {
+                    "preview": {
+                        "assetUrl": "https://assets.grok.com/users/u/generated/task-part-0/image.jpg"
+                    },
+                    "final": {
+                        "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(
+            {ref.url for ref in refs},
+            {
+                "https://assets.grok.com/users/u/generated/task-part-0/image.jpg",
+                "https://assets.grok.com/users/u/generated/task/image.jpg",
+            },
+        )
+        self.assertEqual(
+            {ref.source_shape for ref in refs},
+            {"streaming_image_generation"},
+        )
+
     def test_ignores_unknown_card_type_and_empty_json(self):
         refs = _collect_image_references(
             {
@@ -113,6 +180,75 @@ class ImageReferenceParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(refs, [])
+
+
+class ChatImageProcessorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_processor_emits_images_from_streaming_image_event(self):
+        processor = StreamProcessor("grok-auto", "token", show_think=False)
+
+        with patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            chunks = [
+                chunk
+                async for chunk in processor.process(
+                    _response_stream(
+                        {"result": {"response": {"token": "好的"}}},
+                        {
+                            "result": {
+                                "response": {
+                                    "streamingImageGenerationResponse": {
+                                        "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                                    }
+                                }
+                            }
+                        },
+                    )
+                )
+            ]
+
+        joined = "".join(chunks)
+        self.assertIn("好的", joined)
+        self.assertIn("![task](https://assets.grok.com/users/u/generated/task/image.jpg)", joined)
+
+    async def test_collect_processor_appends_images_from_streaming_image_event(self):
+        processor = CollectProcessor("grok-auto", "token")
+
+        with patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            result = await processor.process(
+                _response_stream(
+                    {
+                        "result": {
+                            "response": {
+                                "streamingImageGenerationResponse": {
+                                    "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                                },
+                                "modelResponse": {
+                                    "responseId": "resp-1",
+                                    "message": "好的，我来生成。",
+                                },
+                            }
+                        }
+                    }
+                )
+            )
+
+        content = result["choices"][0]["message"]["content"]
+        self.assertIn("好的，我来生成。", content)
+        self.assertIn(
+            "![task](https://assets.grok.com/users/u/generated/task/image.jpg)",
+            content,
+        )
 
 
 class ImageEditFallbackTests(unittest.IsolatedAsyncioTestCase):

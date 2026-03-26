@@ -15,6 +15,12 @@ from app.services.grok.services.image import ImageGenerationService
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
 from app.services.token import get_token_manager
+from app.services.token.quota import (
+    all_candidate_tokens_exhausted,
+    image_limit_exception,
+    quota_requirement_for_model,
+    select_token_for_requirement,
+)
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.config import get_config
 from app.core.call_log import begin_call_log, wrap_call_log_stream
@@ -229,13 +235,22 @@ async def _get_token(model: str):
     token_mgr = await get_token_manager()
     await token_mgr.reload_if_stale()
 
-    token = None
-    for pool_name in ModelService.pool_candidates_for_model(model):
-        token = token_mgr.get_token(pool_name)
-        if token:
-            break
+    exhausted_tokens: set[str] = set()
+    requirement = quota_requirement_for_model(model)
+    selection = await select_token_for_requirement(
+        token_mgr,
+        model,
+        tried=set(),
+        requirement=requirement,
+        exhausted_tokens=exhausted_tokens,
+    )
+    token = selection.token
 
     if not token:
+        if requirement and all_candidate_tokens_exhausted(
+            selection.total_candidates, exhausted_tokens
+        ):
+            raise image_limit_exception(selection.total_candidates)
         raise AppException(
             message="No available tokens. Please try again later.",
             error_type=ErrorType.RATE_LIMIT.value,

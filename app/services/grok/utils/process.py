@@ -17,6 +17,7 @@ from app.services.grok.utils.download import DownloadService
 T = TypeVar("T")
 
 _LEGACY_IMAGE_KEYS = {"generatedImageUrls", "imageUrls", "imageURLs"}
+_STREAMING_IMAGE_KEYS = {"streamingImageGenerationResponse"}
 _IMAGE_CHUNK_URL_KEYS = {
     "assetUrl",
     "asset_url",
@@ -92,29 +93,45 @@ def _collect_image_chunk_urls(
     *,
     add_ref,
     card_type: str,
+    source_shape: str = "card_image_chunk",
 ) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if key in _LEGACY_IMAGE_KEYS:
-                _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+                _collect_image_chunk_urls(
+                    item,
+                    add_ref=add_ref,
+                    card_type=card_type,
+                    source_shape=source_shape,
+                )
                 continue
             if key in _IMAGE_CHUNK_URL_KEYS:
                 if isinstance(item, list):
                     for url in item:
                         if isinstance(url, str):
-                            add_ref(url, "card_image_chunk", card_type)
+                            add_ref(url, source_shape, card_type)
                 elif isinstance(item, str):
-                    add_ref(item, "card_image_chunk", card_type)
-            _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+                    add_ref(item, source_shape, card_type)
+            _collect_image_chunk_urls(
+                item,
+                add_ref=add_ref,
+                card_type=card_type,
+                source_shape=source_shape,
+            )
         return
 
     if isinstance(value, list):
         for item in value:
-            _collect_image_chunk_urls(item, add_ref=add_ref, card_type=card_type)
+            _collect_image_chunk_urls(
+                item,
+                add_ref=add_ref,
+                card_type=card_type,
+                source_shape=source_shape,
+            )
         return
 
     if isinstance(value, str) and _looks_like_image_ref(value):
-        add_ref(value, "card_image_chunk", card_type)
+        add_ref(value, source_shape, card_type)
 
 
 def _collect_card_images(card: Any, *, add_ref) -> None:
@@ -139,6 +156,7 @@ def _collect_card_images(card: Any, *, add_ref) -> None:
             json_data.get("image_chunk"),
             add_ref=add_ref,
             card_type=card_type,
+            source_shape="card_image_chunk",
         )
 
 
@@ -201,8 +219,26 @@ def _collect_image_references(obj: Any) -> List[ImageReference]:
             for item in value:
                 walk_cards(item)
 
+    def walk_streaming(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in _STREAMING_IMAGE_KEYS:
+                    _collect_image_chunk_urls(
+                        item,
+                        add_ref=add_ref,
+                        card_type="streaming_image_generation",
+                        source_shape="streaming_image_generation",
+                    )
+                    continue
+                walk_streaming(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk_streaming(item)
+
     walk_legacy(obj)
     walk_cards(obj)
+    walk_streaming(obj)
     return refs
 
 

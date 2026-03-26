@@ -20,6 +20,12 @@ from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoService
 from app.services.grok.utils.response import make_chat_response
 from app.services.token import get_token_manager
+from app.services.token.quota import (
+    all_candidate_tokens_exhausted,
+    image_limit_exception,
+    quota_requirement_for_model,
+    select_token_for_requirement,
+)
 from app.core.config import get_config
 from app.core.exceptions import ValidationException, AppException, ErrorType
 from app.core.call_log import (
@@ -181,6 +187,30 @@ def _imagine_fast_server_image_config() -> ImageConfig:
         or "url"
     )
     return ImageConfig(n=n, size=size, response_format=response_format)
+
+
+async def _select_media_token(token_mgr, model_id: str) -> str:
+    exhausted_tokens: set[str] = set()
+    requirement = quota_requirement_for_model(model_id)
+    selection = await select_token_for_requirement(
+        token_mgr,
+        model_id,
+        tried=set(),
+        requirement=requirement,
+        exhausted_tokens=exhausted_tokens,
+    )
+    if selection.token:
+        return selection.token
+    if requirement and all_candidate_tokens_exhausted(
+        selection.total_candidates, exhausted_tokens
+    ):
+        raise image_limit_exception(selection.total_candidates)
+    raise AppException(
+        message="No available tokens. Please try again later.",
+        error_type=ErrorType.RATE_LIMIT.value,
+        code="rate_limit_exceeded",
+        status_code=429,
+    )
 
 
 async def _safe_sse_stream(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
@@ -723,20 +753,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
-
-        token = None
-        for pool_name in ModelService.pool_candidates_for_model(body.model):
-            token = token_mgr.get_token(pool_name)
-            if token:
-                break
-
-        if not token:
-            raise AppException(
-                message="No available tokens. Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
-            )
+        token = await _select_media_token(token_mgr, body.model)
 
         result = await ImageEditService().edit(
             token_mgr=token_mgr,
@@ -785,20 +802,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
 
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
-
-        token = None
-        for pool_name in ModelService.pool_candidates_for_model(body.model):
-            token = token_mgr.get_token(pool_name)
-            if token:
-                break
-
-        if not token:
-            raise AppException(
-                message="No available tokens. Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
-            )
+        token = await _select_media_token(token_mgr, body.model)
 
         result = await ImageGenerationService().generate(
             token_mgr=token_mgr,

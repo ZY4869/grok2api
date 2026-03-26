@@ -3,7 +3,7 @@
 import asyncio
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from app.core.logger import logger
 from app.core.call_log import bind_call_log_account, log_call_success
@@ -543,6 +543,61 @@ class TokenManager:
             if pool.get(raw_token):
                 return pool_name
         return None
+
+    def get_token_entry(self, token_str: str) -> tuple[Optional[str], Optional[TokenInfo]]:
+        """Return pool name and token info for a token string."""
+        raw_token = token_str.replace("sso=", "")
+        for pool_name, pool in self.pools.items():
+            token = pool.get(raw_token)
+            if token:
+                return pool_name, token
+        return None, None
+
+    def get_rate_limit_cache_entry(
+        self, token_str: str, slot: str
+    ) -> Optional[dict[str, Any]]:
+        """Return cached rate-limit data for a token capability slot."""
+        _, token = self.get_token_entry(token_str)
+        if not token or not isinstance(token.real_quota, dict):
+            return None
+        rate_limits = token.real_quota.get("rate_limits")
+        if not isinstance(rate_limits, dict):
+            return None
+        entry = rate_limits.get(slot)
+        if isinstance(entry, dict):
+            return dict(entry)
+        return None
+
+    def update_rate_limit_cache_entry(
+        self,
+        token_str: str,
+        slot: str,
+        payload: dict[str, Any],
+        *,
+        checked_at: Optional[int] = None,
+    ) -> bool:
+        """Persist rate-limit cache for a token capability slot."""
+        pool_name, token = self.get_token_entry(token_str)
+        if not token or not pool_name:
+            return False
+
+        now_ms = int(datetime.now().timestamp() * 1000)
+        checked_ms = now_ms if checked_at is None else int(checked_at)
+
+        if not isinstance(token.real_quota, dict):
+            token.real_quota = {}
+        rate_limits = token.real_quota.get("rate_limits")
+        if not isinstance(rate_limits, dict):
+            rate_limits = {}
+            token.real_quota["rate_limits"] = rate_limits
+
+        entry = dict(payload or {})
+        entry["checkedAt"] = checked_ms
+        rate_limits[slot] = entry
+        token.last_real_quota_check_at = checked_ms
+        self._track_token_change(token, pool_name, "state")
+        self._schedule_save()
+        return True
 
     async def consume(
         self, token_str: str, effort: EffortType = EffortType.LOW

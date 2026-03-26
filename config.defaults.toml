@@ -18,6 +18,8 @@ video_format = "html"
 temporary = true
 # 是否禁用 Grok 记忆功能
 disable_memory = true
+# Whether modeId=auto requests set enable420 to match the Grok web client.
+auto_enable_420 = true
 # 是否默认启用流式响应
 stream = true
 # 是否默认启用思维链输出
@@ -202,6 +204,10 @@ concurrent = 100
 batch_size = 50
 # Usage 请求超时时间（秒）
 timeout = 60
+
+[quota]
+# Image capability quota probe cache TTL in seconds.
+image_probe_ttl_sec = 30
 
 [account]
 # 是否启用定时可用性检测

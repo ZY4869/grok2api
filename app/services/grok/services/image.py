@@ -26,6 +26,13 @@ from app.services.grok.utils.retry import pick_token, rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
+from app.services.token.quota import (
+    all_candidate_tokens_exhausted,
+    confirm_quota_exhausted,
+    image_limit_exception,
+    quota_requirement_for_model,
+    select_token_for_requirement,
+)
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
@@ -38,6 +45,15 @@ APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     APP_CHAT_REQUEST_LEGACY_MODEL,
 )
+
+
+def _should_probe_image_limit(error: Exception) -> bool:
+    if not isinstance(error, UpstreamException):
+        return False
+    details = error.details if isinstance(error.details, dict) else {}
+    code = details.get("error_code")
+    marker = details.get("error")
+    return rate_limited(error) or code == "blocked_no_final_image" or marker == "empty_result"
 
 
 @dataclass
@@ -67,7 +83,9 @@ class ImageGenerationService:
     ) -> ImageGenerationResult:
         max_token_retries = int(get_config("retry.max_retry") or 3)
         tried_tokens: set[str] = set()
+        exhausted_tokens: set[str] = set()
         last_error: Optional[Exception] = None
+        quota_requirement = quota_requirement_for_model(model_info.model_id)
 
         # resolve nsfw once for routing and upstream
         if enable_nsfw is None:
@@ -80,14 +98,21 @@ class ImageGenerationService:
                 nonlocal last_error
                 for attempt in range(max_token_retries):
                     preferred = token if (attempt == 0 and not prefer_tags) else None
-                    current_token = await pick_token(
+                    selection = await select_token_for_requirement(
                         token_mgr,
                         model_info.model_id,
-                        tried_tokens,
+                        tried=tried_tokens,
+                        requirement=quota_requirement,
                         preferred=preferred,
                         prefer_tags=prefer_tags,
+                        exhausted_tokens=exhausted_tokens,
                     )
+                    current_token = selection.token
                     if not current_token:
+                        if quota_requirement and all_candidate_tokens_exhausted(
+                            selection.total_candidates, exhausted_tokens
+                        ):
+                            raise image_limit_exception(selection.total_candidates)
                         if last_error:
                             raise last_error
                         raise AppException(
@@ -120,9 +145,56 @@ class ImageGenerationService:
                         async for chunk in wrapped:
                             yielded = True
                             yield chunk
+                        if not yielded:
+                            if quota_requirement and await confirm_quota_exhausted(
+                                token_mgr,
+                                current_token,
+                                quota_requirement,
+                                exhausted_tokens,
+                            ):
+                                if all_candidate_tokens_exhausted(
+                                    selection.total_candidates, exhausted_tokens
+                                ):
+                                    raise image_limit_exception(selection.total_candidates)
+                                logger.warning(
+                                    "Image stream attempt ended without chunks; trying next token",
+                                    extra={
+                                        "model": model_info.model_id,
+                                        "attempt": attempt + 1,
+                                        "token": f"{current_token[:10]}...",
+                                    },
+                                )
+                                continue
+                            last_error = UpstreamException(
+                                "Image generation returned no stream chunks",
+                                details={"error": "empty_stream"},
+                            )
+                            if attempt + 1 < max_token_retries:
+                                continue
+                            raise last_error
                         return
                     except UpstreamException as e:
                         last_error = e
+                        if quota_requirement and _should_probe_image_limit(e):
+                            if await confirm_quota_exhausted(
+                                token_mgr,
+                                current_token,
+                                quota_requirement,
+                                exhausted_tokens,
+                            ):
+                                if all_candidate_tokens_exhausted(
+                                    selection.total_candidates, exhausted_tokens
+                                ):
+                                    raise image_limit_exception(selection.total_candidates)
+                                logger.warning(
+                                    "Image stream token hit quota limit, trying next token",
+                                    extra={
+                                        "model": model_info.model_id,
+                                        "attempt": attempt + 1,
+                                        "token": f"{current_token[:10]}...",
+                                    },
+                                )
+                                continue
                         if rate_limited(e):
                             if yielded:
                                 raise
@@ -147,14 +219,21 @@ class ImageGenerationService:
 
         for attempt in range(max_token_retries):
             preferred = token if (attempt == 0 and not prefer_tags) else None
-            current_token = await pick_token(
+            selection = await select_token_for_requirement(
                 token_mgr,
                 model_info.model_id,
-                tried_tokens,
+                tried=tried_tokens,
+                requirement=quota_requirement,
                 preferred=preferred,
                 prefer_tags=prefer_tags,
+                exhausted_tokens=exhausted_tokens,
             )
+            current_token = selection.token
             if not current_token:
+                if quota_requirement and all_candidate_tokens_exhausted(
+                    selection.total_candidates, exhausted_tokens
+                ):
+                    raise image_limit_exception(selection.total_candidates)
                 if last_error:
                     raise last_error
                 raise AppException(
@@ -179,6 +258,26 @@ class ImageGenerationService:
                 )
             except UpstreamException as e:
                 last_error = e
+                if quota_requirement and _should_probe_image_limit(e):
+                    if await confirm_quota_exhausted(
+                        token_mgr,
+                        current_token,
+                        quota_requirement,
+                        exhausted_tokens,
+                    ):
+                        if all_candidate_tokens_exhausted(
+                            selection.total_candidates, exhausted_tokens
+                        ):
+                            raise image_limit_exception(selection.total_candidates)
+                        logger.warning(
+                            "Image collect token hit quota limit, trying next token",
+                            extra={
+                                "model": model_info.model_id,
+                                "attempt": attempt + 1,
+                                "token": f"{current_token[:10]}...",
+                            },
+                        )
+                        continue
                 if rate_limited(e):
                     await token_mgr.mark_rate_limited(current_token)
                     logger.warning(
