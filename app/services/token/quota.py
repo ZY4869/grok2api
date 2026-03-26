@@ -18,7 +18,15 @@ IMAGE_LIMIT_SINGLE_MESSAGE = "当前账号生图额度已达上限，请稍后�
 IMAGE_LIMIT_ALL_MESSAGE = "所有可用账号的生图额度均已达上限，请稍后再试。"
 IMAGE_QUOTA_SLOT = "grok-imagine-1.0"
 AUTO_IMAGE_QUOTA_SLOT = "auto"
+TEXT_AUTO_QUOTA_SLOT = "auto"
+TEXT_GROK3_QUOTA_SLOT = "grok-3"
+TEXT_GROK4_QUOTA_SLOT = "grok-4"
+VIDEO_QUOTA_SLOT = "grok-imagine-1.0-video"
 DEFAULT_IMAGE_PROBE_TTL_SEC = 30
+DEFAULT_TEXT_PROBE_TTL_SEC = 15
+RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED = "confirmed_exhausted"
+RATE_LIMIT_ACTION_RETRY_SAME_TOKEN = "retry_same_token"
+RATE_LIMIT_ACTION_SOFT_COOLING = "soft_cooled"
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,8 @@ class QuotaRequirement:
     slot: str
     probe_models: tuple[str, ...]
     request_kind: str = "DEFAULT"
+    ttl_config_key: str = "quota.image_probe_ttl_sec"
+    ttl_default_sec: float = DEFAULT_IMAGE_PROBE_TTL_SEC
 
 
 @dataclass
@@ -48,8 +58,20 @@ class TokenSelectionResult:
     total_candidates: int
 
 
+@dataclass
+class RateLimitResolution:
+    action: str
+    probe: Optional["QuotaProbeResult"]
+    retry_after_seconds: float = 0.0
+
+
 def auto_image_quota_requirement() -> QuotaRequirement:
-    return QuotaRequirement(slot=AUTO_IMAGE_QUOTA_SLOT, probe_models=("auto",))
+    return QuotaRequirement(
+        slot=AUTO_IMAGE_QUOTA_SLOT,
+        probe_models=("auto",),
+        ttl_config_key="quota.image_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_IMAGE_PROBE_TTL_SEC,
+    )
 
 
 def image_quota_requirement() -> QuotaRequirement:
@@ -60,6 +82,44 @@ def image_quota_requirement() -> QuotaRequirement:
             "grok-imagine-1.0-fast",
             "grok-imagine-1.0-edit",
         ),
+        ttl_config_key="quota.image_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_IMAGE_PROBE_TTL_SEC,
+    )
+
+
+def video_quota_requirement() -> QuotaRequirement:
+    return QuotaRequirement(
+        slot=VIDEO_QUOTA_SLOT,
+        probe_models=("grok-imagine-1.0-video",),
+        ttl_config_key="quota.image_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_IMAGE_PROBE_TTL_SEC,
+    )
+
+
+def text_auto_quota_requirement() -> QuotaRequirement:
+    return QuotaRequirement(
+        slot=TEXT_AUTO_QUOTA_SLOT,
+        probe_models=("auto",),
+        ttl_config_key="quota.text_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_TEXT_PROBE_TTL_SEC,
+    )
+
+
+def text_grok3_quota_requirement() -> QuotaRequirement:
+    return QuotaRequirement(
+        slot=TEXT_GROK3_QUOTA_SLOT,
+        probe_models=("grok-3",),
+        ttl_config_key="quota.text_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_TEXT_PROBE_TTL_SEC,
+    )
+
+
+def text_grok4_quota_requirement() -> QuotaRequirement:
+    return QuotaRequirement(
+        slot=TEXT_GROK4_QUOTA_SLOT,
+        probe_models=("grok-4",),
+        ttl_config_key="quota.text_probe_ttl_sec",
+        ttl_default_sec=DEFAULT_TEXT_PROBE_TTL_SEC,
     )
 
 
@@ -70,6 +130,23 @@ def quota_requirement_for_model(model_id: str) -> Optional[QuotaRequirement]:
     model_info = ModelService.get(model_id)
     if model_info and (model_info.is_image or model_info.is_image_edit):
         return image_quota_requirement()
+    return None
+
+
+def rate_limit_requirement_for_model(model_id: str) -> Optional[QuotaRequirement]:
+    model = str(model_id or "").strip()
+    if model == "grok-auto":
+        return text_auto_quota_requirement()
+    if model == "grok-3-fast":
+        return text_grok3_quota_requirement()
+    if model in {"grok-4-expert", "grok-4-heavy"}:
+        return text_grok4_quota_requirement()
+
+    model_info = ModelService.get(model)
+    if model_info and (model_info.is_image or model_info.is_image_edit):
+        return image_quota_requirement()
+    if model_info and model_info.is_video:
+        return video_quota_requirement()
     return None
 
 
@@ -99,12 +176,12 @@ def all_candidate_tokens_exhausted(
     )
 
 
-def _ttl_ms() -> int:
-    value = get_config("quota.image_probe_ttl_sec", DEFAULT_IMAGE_PROBE_TTL_SEC)
+def _ttl_ms(requirement: QuotaRequirement) -> int:
+    value = get_config(requirement.ttl_config_key, requirement.ttl_default_sec)
     try:
         seconds = max(0.0, float(value))
     except Exception:
-        seconds = float(DEFAULT_IMAGE_PROBE_TTL_SEC)
+        seconds = float(requirement.ttl_default_sec)
     return int(seconds * 1000)
 
 
@@ -180,7 +257,7 @@ async def probe_quota(
 ) -> QuotaProbeResult:
     now_ms = int(time.time() * 1000)
     cached = token_mgr.get_rate_limit_cache_entry(token, requirement.slot)
-    ttl_ms = _ttl_ms()
+    ttl_ms = _ttl_ms(requirement)
 
     if (
         cached
@@ -286,6 +363,162 @@ async def confirm_quota_exhausted(
     return exhausted
 
 
+def _probe_result_payload(
+    probe: QuotaProbeResult,
+    *,
+    action: str,
+    model_id: str,
+) -> dict[str, Any]:
+    return {
+        "action": action,
+        "model_id": model_id,
+        "slot": probe.slot,
+        "probe_model": probe.probe_model,
+        "source_model": probe.source_model,
+        "remaining_queries": probe.remaining_queries,
+        "wait_time_seconds": probe.wait_time_seconds,
+        "known": probe.known,
+        "exhausted": probe.exhausted,
+        "cache_hit": probe.cache_hit,
+        "checked_at": probe.checked_at,
+        "error": probe.error,
+    }
+
+
+def _rate_limit_retry_delay_seconds() -> float:
+    value = get_config("retry.retry_backoff_base", 0.5)
+    try:
+        seconds = float(value)
+    except Exception:
+        seconds = 0.5
+    return min(max(seconds, 0.25), 2.0)
+
+
+async def resolve_rate_limit_hit(
+    token_mgr,
+    token: str,
+    model_id: str,
+    *,
+    requirement: Optional[QuotaRequirement] = None,
+    exhausted_tokens: Optional[Set[str]] = None,
+) -> RateLimitResolution:
+    resolved_requirement = requirement or rate_limit_requirement_for_model(model_id)
+    logger.warning(
+        "rate_limit_hit",
+        extra={
+            "model": model_id,
+            "token": f"{token[:10]}...",
+            "quota_slot": getattr(resolved_requirement, "slot", ""),
+        },
+    )
+
+    if not bool(get_config("token.rate_limit_probe_on_429_enabled", True)):
+        await token_mgr.mark_rate_limited(token)
+        if exhausted_tokens is not None:
+            exhausted_tokens.add(token)
+        return RateLimitResolution(
+            action=RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
+            probe=None,
+        )
+
+    if not resolved_requirement:
+        await token_mgr.mark_rate_limited_soft(token)
+        return RateLimitResolution(
+            action=RATE_LIMIT_ACTION_SOFT_COOLING,
+            probe=None,
+        )
+
+    logger.info(
+        "rate_limit_probe_started",
+        extra={
+            "model": model_id,
+            "token": f"{token[:10]}...",
+            "quota_slot": resolved_requirement.slot,
+        },
+    )
+    probe = await probe_quota(token_mgr, token, resolved_requirement, force_refresh=True)
+
+    if probe.known and probe.exhausted:
+        payload = _probe_result_payload(
+            probe,
+            action=RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
+            model_id=model_id,
+        )
+        await token_mgr.mark_rate_limited(
+            token,
+            wait_time_seconds=probe.wait_time_seconds,
+            probe_result=payload,
+            checked_at=probe.checked_at,
+        )
+        if exhausted_tokens is not None:
+            exhausted_tokens.add(token)
+        logger.warning(
+            "rate_limit_probe_confirmed_exhausted",
+            extra={
+                "model": model_id,
+                "token": f"{token[:10]}...",
+                "quota_slot": probe.slot,
+                "remaining_queries": probe.remaining_queries,
+                "wait_time_seconds": probe.wait_time_seconds,
+            },
+        )
+        return RateLimitResolution(
+            action=RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
+            probe=probe,
+        )
+
+    if probe.known:
+        payload = _probe_result_payload(
+            probe,
+            action=RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
+            model_id=model_id,
+        )
+        await token_mgr.clear_rate_limit_soft_state(
+            token,
+            probe_result=payload,
+            checked_at=probe.checked_at,
+        )
+        logger.info(
+            "rate_limit_probe_cleared_false_positive",
+            extra={
+                "model": model_id,
+                "token": f"{token[:10]}...",
+                "quota_slot": probe.slot,
+                "remaining_queries": probe.remaining_queries,
+                "wait_time_seconds": probe.wait_time_seconds,
+            },
+        )
+        return RateLimitResolution(
+            action=RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
+            probe=probe,
+            retry_after_seconds=_rate_limit_retry_delay_seconds(),
+        )
+
+    payload = _probe_result_payload(
+        probe,
+        action=RATE_LIMIT_ACTION_SOFT_COOLING,
+        model_id=model_id,
+    )
+    await token_mgr.mark_rate_limited_soft(
+        token,
+        probe_result=payload,
+        checked_at=probe.checked_at,
+    )
+    logger.warning(
+        "rate_limit_probe_unknown_soft_cooled",
+        extra={
+            "model": model_id,
+            "token": f"{token[:10]}...",
+            "quota_slot": probe.slot,
+            "error": probe.error,
+        },
+    )
+    return RateLimitResolution(
+        action=RATE_LIMIT_ACTION_SOFT_COOLING,
+        probe=probe,
+    )
+
+
 def count_candidate_tokens(token_mgr, model_id: str) -> int:
     consumed_mode = False
     if hasattr(token_mgr, "_is_consumed_mode"):
@@ -383,10 +616,15 @@ async def select_token_for_requirement(
 __all__ = [
     "AUTO_IMAGE_QUOTA_SLOT",
     "DEFAULT_IMAGE_PROBE_TTL_SEC",
+    "DEFAULT_TEXT_PROBE_TTL_SEC",
     "IMAGE_LIMIT_ALL_MESSAGE",
     "IMAGE_LIMIT_ERROR_CODE",
     "IMAGE_LIMIT_SINGLE_MESSAGE",
     "IMAGE_QUOTA_SLOT",
+    "RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED",
+    "RATE_LIMIT_ACTION_RETRY_SAME_TOKEN",
+    "RATE_LIMIT_ACTION_SOFT_COOLING",
+    "RateLimitResolution",
     "QuotaProbeResult",
     "QuotaRequirement",
     "TokenSelectionResult",
@@ -399,5 +637,11 @@ __all__ = [
     "is_image_limit_exception",
     "probe_quota",
     "quota_requirement_for_model",
+    "rate_limit_requirement_for_model",
+    "resolve_rate_limit_hit",
     "select_token_for_requirement",
+    "text_auto_quota_requirement",
+    "text_grok3_quota_requirement",
+    "text_grok4_quota_requirement",
+    "video_quota_requirement",
 ]

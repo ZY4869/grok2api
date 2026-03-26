@@ -29,6 +29,10 @@ function getDefaultQuotaForPool(pool) {
     : DEFAULT_QUOTA_BASIC;
 }
 
+function isFutureTimestamp(timestamp) {
+  return Number(timestamp || 0) > Date.now();
+}
+
 function setText(id, text) {
   const el = byId(id);
   if (el) el.innerText = text;
@@ -174,7 +178,14 @@ function processTokens(data) {
             last_sync_at: t.last_sync_at,
             last_asset_clear_at: t.last_asset_clear_at,
             alive: t.alive != null ? t.alive : null,
-            last_alive_check_at: t.last_alive_check_at
+            last_alive_check_at: t.last_alive_check_at,
+            cooling_until: t.cooling_until || 0,
+            suspected_rate_limited_until: t.suspected_rate_limited_until || 0,
+            last_rate_limit_probe_at: t.last_rate_limit_probe_at || 0,
+            last_rate_limit_probe_result:
+              t.last_rate_limit_probe_result && typeof t.last_rate_limit_probe_result === 'object'
+                ? t.last_rate_limit_probe_result
+                : null
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
@@ -329,6 +340,9 @@ function renderTable() {
     else statusClass = 'badge-gray';
     tdStatus.className = 'text-center';
     let statusHtml = `<span class="badge ${statusClass}">${item.status}</span>`;
+    if (item.status === 'active' && isFutureTimestamp(item.suspected_rate_limited_until)) {
+      statusHtml += ` <span class="badge badge-orange" title="soft-cooling">soft-cooling</span>`;
+    }
     if (item.tags && item.tags.includes('nsfw')) {
       statusHtml += ` <span class="badge badge-purple">nsfw</span>`;
     }

@@ -92,6 +92,8 @@ save_delay_ms = 500
 usage_flush_interval_sec = 5
 # 多 worker 状态同步间隔（秒）
 reload_interval_sec = 30
+soft_cooling_seconds = 30
+rate_limit_probe_on_429_enabled = true
 # 启用消耗模式（试验性功能，默认关闭）
 consumed_mode_enabled = false
 
@@ -208,6 +210,7 @@ timeout = 60
 [quota]
 # Image capability quota probe cache TTL in seconds.
 image_probe_ttl_sec = 30
+text_probe_ttl_sec = 15
 
 [account]
 # 是否启用定时可用性检测

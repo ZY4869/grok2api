@@ -69,10 +69,14 @@ class TokenInfo(BaseModel):
 
     # 冷却管理
     last_sync_at: Optional[int] = None  # 上次同步时间
+    cooling_until: Optional[int] = None
 
     # 可用性检测
     alive: Optional[bool] = None  # None=未检测, True=可用, False=不可用
     last_alive_check_at: Optional[int] = None
+    suspected_rate_limited_until: Optional[int] = None
+    last_rate_limit_probe_at: Optional[int] = None
+    last_rate_limit_probe_result: Optional[dict[str, Any]] = None
 
     # 扩展
     tags: List[str] = Field(default_factory=list)
@@ -133,13 +137,46 @@ class TokenInfo(BaseModel):
         """检查当前模式下 token 是否可用。"""
         if self.status != TokenStatus.ACTIVE:
             return False
+        if self.is_soft_rate_limited():
+            return False
         if consumed_mode:
             return True
         return self.quota > 0
 
-    def enter_cooling(self, reset_consumed: bool = True):
+    def is_soft_rate_limited(self, now_ms: Optional[int] = None) -> bool:
+        """Whether this token is temporarily soft-cooled after an unconfirmed 429."""
+        if self.suspected_rate_limited_until is None:
+            return False
+        if now_ms is None:
+            now_ms = int(datetime.now().timestamp() * 1000)
+        return now_ms < self.suspected_rate_limited_until
+
+    def clear_soft_rate_limit(self):
+        self.suspected_rate_limited_until = None
+
+    def set_soft_rate_limit(self, until_ms: int):
+        self.suspected_rate_limited_until = max(0, int(until_ms))
+
+    def set_rate_limit_probe_result(
+        self,
+        payload: Optional[dict[str, Any]],
+        *,
+        checked_at: Optional[int] = None,
+    ):
+        now_ms = int(datetime.now().timestamp() * 1000)
+        self.last_rate_limit_probe_at = now_ms if checked_at is None else int(checked_at)
+        self.last_rate_limit_probe_result = dict(payload or {})
+
+    def enter_cooling(
+        self,
+        reset_consumed: bool = True,
+        *,
+        until_ms: Optional[int] = None,
+    ):
         """进入冷却状态，并在新窗口开始时清空 consumed。"""
         self.status = TokenStatus.COOLING
+        self.cooling_until = None if until_ms is None else max(0, int(until_ms))
+        self.clear_soft_rate_limit()
         if reset_consumed:
             self.consumed = 0
 
@@ -147,8 +184,11 @@ class TokenInfo(BaseModel):
         """仅在允许的前提下恢复为 active。"""
         if self.status == TokenStatus.COOLING:
             self.status = TokenStatus.ACTIVE
+            self.cooling_until = None
         elif allow_from_expired and self.status == TokenStatus.EXPIRED:
             self.status = TokenStatus.ACTIVE
+        self.cooling_until = None
+        self.clear_soft_rate_limit()
 
     def consume(self, effort: EffortType = EffortType.LOW) -> int:
         """
@@ -166,6 +206,7 @@ class TokenInfo(BaseModel):
         actual_cost = min(cost, self.quota)
 
         self.last_used_at = int(datetime.now().timestamp() * 1000)
+        self.clear_soft_rate_limit()
         self.consumed += cost  # 无论是否开启消耗模式，都记录消耗
         self.use_count += actual_cost
         self.quota = max(0, self.quota - actual_cost)
@@ -192,6 +233,7 @@ class TokenInfo(BaseModel):
         """
         cost = EFFORT_COST[effort]
 
+        self.clear_soft_rate_limit()
         self.consumed += cost  # 累加消耗记录
         self.last_used_at = int(datetime.now().timestamp() * 1000)
         self.use_count += 1
@@ -236,10 +278,14 @@ class TokenInfo(BaseModel):
         quota = BASIC__DEFAULT_QUOTA if default_quota is None else default_quota
         self.quota = max(0, int(quota))
         self.status = TokenStatus.ACTIVE
+        self.cooling_until = None
         self.fail_count = 0
         self.last_fail_reason = None
         # 重置消耗记录
         self.consumed = 0
+        self.clear_soft_rate_limit()
+        self.last_rate_limit_probe_at = None
+        self.last_rate_limit_probe_result = None
 
     def record_fail(
         self,
@@ -265,6 +311,8 @@ class TokenInfo(BaseModel):
         self.fail_count = 0
         self.last_fail_at = None
         self.last_fail_reason = None
+        self.cooling_until = None
+        self.clear_soft_rate_limit()
 
         if is_usage:
             self.use_count += 1
@@ -275,10 +323,13 @@ class TokenInfo(BaseModel):
         if self.status != TokenStatus.COOLING:
             return False
 
+        now = int(datetime.now().timestamp() * 1000)
+        if self.cooling_until is not None:
+            return now >= self.cooling_until
+
         if self.last_sync_at is None:
             return True
 
-        now = int(datetime.now().timestamp() * 1000)
         interval_ms = interval_hours * 3600 * 1000
         return (now - self.last_sync_at) >= interval_ms
 
@@ -299,6 +350,7 @@ class TokenInfo(BaseModel):
         """
         if remaining_tokens <= threshold:
             self.status = TokenStatus.COOLING
+            self.cooling_until = None
             return True
         return False
 

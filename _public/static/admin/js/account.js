@@ -41,6 +41,18 @@ function formatTime(timestamp) {
   )}:${pad(date.getMinutes())}`;
 }
 
+function isFutureTimestamp(timestamp) {
+  return Number(timestamp || 0) > Date.now();
+}
+
+function isSoftCooling(item) {
+  return (
+    item &&
+    item.status === "active" &&
+    isFutureTimestamp(item.suspected_rate_limited_until)
+  );
+}
+
 async function readJsonResponse(response) {
   const text = await response.text();
   if (!text) return null;
@@ -216,6 +228,14 @@ function setEmptyState(isEmpty) {
 }
 
 function getAliveDisplay(item) {
+  if (item && item.status === "active" && isFutureTimestamp(item.suspected_rate_limited_until)) {
+    const softTitle = `soft-cooling until ${formatTime(item.suspected_rate_limited_until)}`;
+    return `<span class="text-amber-500 font-bold" title="${escapeHtml(softTitle)}">&#9673;</span>`;
+  }
+  if (item && item.status === "cooling" && isFutureTimestamp(item.cooling_until)) {
+    const coolingTitle = `cooling until ${formatTime(item.cooling_until)}`;
+    return `<span class="text-orange-500 font-bold" title="${escapeHtml(coolingTitle)}">&#9724;</span>`;
+  }
   if (item.status === "expired") {
     return '<span class="text-red-600 font-bold" title="失效">&#10007;</span>';
   }
@@ -609,6 +629,14 @@ async function loadAccountData() {
               : null,
           last_real_quota_check_at: tokenInfo.last_real_quota_check_at,
           last_real_quota_error: tokenInfo.last_real_quota_error || "",
+          cooling_until: tokenInfo.cooling_until || 0,
+          suspected_rate_limited_until: tokenInfo.suspected_rate_limited_until || 0,
+          last_rate_limit_probe_at: tokenInfo.last_rate_limit_probe_at || 0,
+          last_rate_limit_probe_result:
+            tokenInfo.last_rate_limit_probe_result &&
+            typeof tokenInfo.last_rate_limit_probe_result === "object"
+              ? tokenInfo.last_rate_limit_probe_result
+              : null,
           tags: Array.isArray(tokenInfo.tags) ? tokenInfo.tags : [],
           last_alive_check_at: tokenInfo.last_alive_check_at,
           _selected: false,

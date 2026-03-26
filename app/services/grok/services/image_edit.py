@@ -36,10 +36,13 @@ from app.services.grok.services.video import VideoService
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
 from app.services.token.quota import (
+    RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
+    RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
     all_candidate_tokens_exhausted,
     confirm_quota_exhausted,
     image_limit_exception,
     quota_requirement_for_model,
+    resolve_rate_limit_hit,
     select_token_for_requirement,
 )
 from app.services.reverse.app_chat import (
@@ -222,11 +225,33 @@ class ImageEditService:
                                 )
                                 continue
                         if rate_limited(e):
-                            await token_mgr.mark_rate_limited(current_token)
-                            logger.warning(
-                                f"Token {current_token[:10]}... rate limited (429), "
-                                f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                            resolution = await resolve_rate_limit_hit(
+                                token_mgr,
+                                current_token,
+                                model_info.model_id,
+                                requirement=quota_requirement,
+                                exhausted_tokens=exhausted_tokens,
                             )
+                            if (
+                                resolution.action == RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED
+                                and all_candidate_tokens_exhausted(
+                                    selection.total_candidates, exhausted_tokens
+                                )
+                            ):
+                                raise image_limit_exception(selection.total_candidates)
+                            if resolution.action == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN:
+                                tried_tokens.discard(current_token)
+                                if resolution.retry_after_seconds > 0:
+                                    await asyncio.sleep(resolution.retry_after_seconds)
+                                logger.info(
+                                    f"Token {current_token[:10]}... rate limit cleared by probe, "
+                                    f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Token {current_token[:10]}... rate limited (429), "
+                                    f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                                )
                             continue
                         raise
 
@@ -305,11 +330,33 @@ class ImageEditService:
                         )
                         continue
                 if rate_limited(e):
-                    await token_mgr.mark_rate_limited(current_token)
-                    logger.warning(
-                        f"Token {current_token[:10]}... rate limited (429), "
-                        f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                    resolution = await resolve_rate_limit_hit(
+                        token_mgr,
+                        current_token,
+                        model_info.model_id,
+                        requirement=quota_requirement,
+                        exhausted_tokens=exhausted_tokens,
                     )
+                    if (
+                        resolution.action == RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED
+                        and all_candidate_tokens_exhausted(
+                            selection.total_candidates, exhausted_tokens
+                        )
+                    ):
+                        raise image_limit_exception(selection.total_candidates)
+                    if resolution.action == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN:
+                        tried_tokens.discard(current_token)
+                        if resolution.retry_after_seconds > 0:
+                            await asyncio.sleep(resolution.retry_after_seconds)
+                        logger.info(
+                            f"Token {current_token[:10]}... rate limit cleared by probe, "
+                            f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Token {current_token[:10]}... rate limited (429), "
+                            f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                        )
                     continue
                 raise
 
