@@ -4,9 +4,11 @@ Grok Chat 服务
 
 import asyncio
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Any, AsyncGenerator, AsyncIterable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import orjson
 from curl_cffi.requests.errors import RequestsError
@@ -24,7 +26,13 @@ from app.services.grok.services.model import ModelService
 from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils import process as proc_base
 from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
-from app.services.reverse.app_chat import AppChatReverse
+from app.services.reverse.app_chat import (
+    AppChatRequestMetadata,
+    AppChatRequestResult,
+    AppChatReverse,
+)
+from app.services.reverse.app_asset import AppAssetReverse
+from app.services.reverse.app_chat_conversation import AppChatConversationReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.grok.utils.tool_call import (
@@ -42,8 +50,8 @@ from app.services.token.quota import (
     RATE_LIMIT_ACTION_CONFIRMED_EXHAUSTED,
     RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
     all_candidate_tokens_exhausted,
-    auto_image_quota_requirement,
     confirm_quota_exhausted,
+    image_quota_requirement,
     image_limit_exception,
     resolve_rate_limit_hit,
     select_token_for_requirement,
@@ -52,6 +60,10 @@ from app.services.token.quota import (
 
 _CHAT_SEMAPHORE = None
 _CHAT_SEM_VALUE = None
+_QUICK_IMAGE_MODELS = frozenset({"grok-auto", "grok-3-fast", "grok-4-expert"})
+_QUICK_IMAGE_POLL_INTERVAL_SEC = 1.0
+_QUICK_IMAGE_PREVIEW_URL_RE = re.compile(r"/generated/[^/]+-part-\d+/")
+_QUICK_IMAGE_PREVIEW_SEGMENT_RE = re.compile(r"-part-\d+(?=/)")
 
 
 def extract_tool_text(raw: str, rollout_id: str = "") -> str:
@@ -267,7 +279,7 @@ class MessageExtractor:
 class GrokChatService:
     """Grok API 调用服务"""
 
-    async def chat(
+    async def chat_request(
         self,
         token: str,
         message: str,
@@ -294,7 +306,7 @@ class GrokChatService:
         await semaphore.acquire()
         session = ResettableSession(impersonate=browser)
         try:
-            stream_response = await AppChatReverse.request(
+            request_result = await AppChatReverse.request(
                 session,
                 token,
                 message=message,
@@ -316,14 +328,51 @@ class GrokChatService:
             semaphore.release()
             raise
 
+        if not isinstance(request_result, AppChatRequestResult):
+            request_result = AppChatRequestResult(
+                stream=request_result,
+                metadata=AppChatRequestMetadata(),
+            )
+
         async def _stream():
             try:
-                async for line in stream_response:
+                async for line in request_result:
                     yield line
             finally:
                 semaphore.release()
 
-        return _stream()
+        return AppChatRequestResult(
+            stream=_stream(),
+            metadata=request_result.metadata,
+        )
+
+    async def chat(
+        self,
+        token: str,
+        message: str,
+        model: str,
+        mode: str = None,
+        stream: bool = None,
+        file_attachments: List[str] = None,
+        request_overrides: Dict[str, Any] = None,
+        tool_overrides: Dict[str, Any] = None,
+        model_config_override: Dict[str, Any] = None,
+        use_mode_id: bool = False,
+        request_strategy: str | None = None,
+    ):
+        return await self.chat_request(
+            token=token,
+            message=message,
+            model=model,
+            mode=mode,
+            stream=stream,
+            file_attachments=file_attachments,
+            request_overrides=request_overrides,
+            tool_overrides=tool_overrides,
+            model_config_override=model_config_override,
+            use_mode_id=use_mode_id,
+            request_strategy=request_strategy,
+        )
 
     async def chat_openai(
         self,
@@ -485,6 +534,449 @@ def _should_probe_auto_image_limit(error: Exception) -> bool:
     return rate_limited(error) or marker in {"empty_result", "empty_stream"} or code == "blocked_no_final_image"
 
 
+def _is_quick_mode_image_intent(
+    model: str, messages: List[Dict[str, Any]]
+) -> bool:
+    return model in _QUICK_IMAGE_MODELS and _looks_like_auto_image_prompt(messages)
+
+
+def _is_final_image_url(url: str) -> bool:
+    text = str(url or "").strip()
+    if not text:
+        return False
+    return not _QUICK_IMAGE_PREVIEW_URL_RE.search(text)
+
+
+def _quick_image_now() -> float:
+    return time.monotonic()
+
+
+_REMOVE_PREVIEW_URL = object()
+
+
+def _strip_preview_image_urls(value: Any) -> Any:
+    if isinstance(value, dict):
+        changed = False
+        result: Dict[str, Any] = {}
+        for key, item in value.items():
+            stripped = _strip_preview_image_urls(item)
+            if stripped is _REMOVE_PREVIEW_URL:
+                changed = True
+                continue
+            if stripped is not item:
+                changed = True
+            result[key] = stripped
+        return result if changed else value
+
+    if isinstance(value, list):
+        changed = False
+        result: List[Any] = []
+        for item in value:
+            stripped = _strip_preview_image_urls(item)
+            if stripped is _REMOVE_PREVIEW_URL:
+                changed = True
+                continue
+            if stripped is not item:
+                changed = True
+            result.append(stripped)
+        return result if changed else value
+
+    if isinstance(value, str) and _QUICK_IMAGE_PREVIEW_URL_RE.search(value):
+        return _REMOVE_PREVIEW_URL
+
+    return value
+
+
+def _collect_final_image_urls(value: Any) -> List[str]:
+    seen: set[str] = set()
+    results: List[str] = []
+
+    for ref in proc_base._collect_image_references(value):
+        if not _is_final_image_url(ref.url) or ref.url in seen:
+            continue
+        seen.add(ref.url)
+        results.append(ref.url)
+
+    if results:
+        return results
+
+    def _walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for nested in item.values():
+                _walk(nested)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                _walk(nested)
+            return
+        if not isinstance(item, str):
+            return
+        text = item.strip()
+        if not text or text in seen:
+            return
+        if "/generated/" not in text or "/image." not in text:
+            return
+        if not _is_final_image_url(text):
+            return
+        seen.add(text)
+        results.append(text)
+
+    _walk(value)
+    return results
+
+
+def _collect_preview_image_urls(value: Any) -> List[str]:
+    seen: set[str] = set()
+    results: List[str] = []
+
+    def _add(url: str) -> None:
+        text = str(url or "").strip()
+        if not text or text in seen:
+            return
+        if not _QUICK_IMAGE_PREVIEW_URL_RE.search(text):
+            return
+        seen.add(text)
+        results.append(text)
+
+    for ref in proc_base._collect_image_references(value):
+        _add(ref.url)
+
+    def _walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for nested in item.values():
+                _walk(nested)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                _walk(nested)
+            return
+        if not isinstance(item, str):
+            return
+        _add(item)
+
+    _walk(value)
+    return results
+
+
+def _derive_final_image_url_from_preview(preview_url: str) -> str:
+    text = str(preview_url or "").strip()
+    if not text or not _QUICK_IMAGE_PREVIEW_URL_RE.search(text):
+        return ""
+
+    parts = urlsplit(text)
+    path, changed = _QUICK_IMAGE_PREVIEW_SEGMENT_RE.subn("", parts.path)
+    if changed <= 0 or not path:
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _derive_quick_image_candidate_urls(preview_urls: List[str]) -> List[str]:
+    seen: set[str] = set()
+    candidates: List[str] = []
+    for preview_url in preview_urls or []:
+        candidate = _derive_final_image_url_from_preview(preview_url)
+        if not candidate or candidate in seen or not _is_final_image_url(candidate):
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+    return candidates
+
+
+def _prepare_quick_image_raw_line(raw_line: Any) -> tuple[Any, bool, bool, List[str]]:
+    line = proc_base._normalize_line(raw_line)
+    if not line:
+        return raw_line, False, False, []
+
+    try:
+        payload = orjson.loads(line)
+    except orjson.JSONDecodeError:
+        return raw_line, False, False, []
+
+    resp = payload.get("result", {}).get("response", {})
+    preview_urls = _collect_preview_image_urls(resp)
+    has_streaming_image_event = bool(resp.get("streamingImageGenerationResponse"))
+    stripped_resp = _strip_preview_image_urls(resp)
+    if stripped_resp is _REMOVE_PREVIEW_URL:
+        stripped_resp = {}
+    if stripped_resp is not resp:
+        payload["result"]["response"] = stripped_resp
+        raw_line = f"data: {orjson.dumps(payload).decode()}"
+        resp = stripped_resp
+
+    final_urls = _collect_final_image_urls(resp)
+    return raw_line, bool(final_urls), has_streaming_image_event, preview_urls
+
+
+def _build_quick_image_completion_line(
+    final_urls: List[str], response_id: str = ""
+) -> str:
+    payload: Dict[str, Any] = {
+        "result": {
+            "response": {
+                "streamingImageGenerationResponse": {
+                    "final": [{"imageUrl": url} for url in final_urls]
+                }
+            }
+        }
+    }
+    if response_id:
+        payload["result"]["response"]["responseId"] = response_id
+    return f"data: {orjson.dumps(payload).decode()}"
+
+
+async def _poll_quick_image_final_urls(
+    *,
+    token: str,
+    conversation_id: str,
+    model: str,
+    preview_urls: List[str] | None = None,
+    response_id: str = "",
+) -> List[str]:
+    timeout = float(get_config("image.final_timeout") or 15)
+    deadline = _quick_image_now() + max(1.0, timeout)
+    browser = get_config("proxy.browser")
+    known_preview_urls = list(preview_urls or [])
+    saw_candidates = False
+    logged_candidate_urls: tuple[str, ...] = ()
+
+    async def _probe_asset_candidates(
+        session: ResettableSession,
+        candidate_urls: List[str],
+    ) -> List[str]:
+        ready_urls: List[str] = []
+        for candidate_url in candidate_urls:
+            try:
+                if await AppAssetReverse.probe(session, candidate_url):
+                    ready_urls.append(candidate_url)
+            except Exception as exc:
+                logger.warning(
+                    "Quick image asset probe failed",
+                    extra={
+                        "model": model,
+                        "conversation_id": conversation_id or "",
+                        "response_id": response_id,
+                        "candidate_url": candidate_url,
+                        "error": str(exc),
+                    },
+                )
+        if ready_urls:
+            logger.info(
+                "Quick image asset probe succeeded",
+                extra={
+                    "model": model,
+                    "conversation_id": conversation_id or "",
+                    "response_id": response_id,
+                    "candidate_count": len(ready_urls),
+                },
+            )
+        return ready_urls
+
+    async with ResettableSession(impersonate=browser) as session:
+        while _quick_image_now() < deadline:
+            if conversation_id:
+                try:
+                    payload = await AppChatConversationReverse.request(
+                        session,
+                        token,
+                        conversation_id,
+                    )
+                    for preview_url in _collect_preview_image_urls(payload):
+                        if preview_url not in known_preview_urls:
+                            known_preview_urls.append(preview_url)
+                    final_urls = _collect_final_image_urls(payload)
+                    if final_urls:
+                        return final_urls
+                except Exception as exc:
+                    logger.warning(
+                        "Quick image conversations_v2 poll failed",
+                        extra={
+                            "model": model,
+                            "conversation_id": conversation_id,
+                            "response_id": response_id,
+                            "error": str(exc),
+                        },
+                    )
+
+            candidate_urls = _derive_quick_image_candidate_urls(known_preview_urls)
+            if candidate_urls:
+                saw_candidates = True
+                candidate_key = tuple(candidate_urls)
+                if candidate_key != logged_candidate_urls:
+                    logged_candidate_urls = candidate_key
+                    logger.info(
+                        "Quick image asset candidates derived",
+                        extra={
+                            "model": model,
+                            "conversation_id": conversation_id or "",
+                            "response_id": response_id,
+                            "candidate_count": len(candidate_urls),
+                        },
+                    )
+                ready_urls = await _probe_asset_candidates(session, candidate_urls)
+                if ready_urls:
+                    return ready_urls
+            elif not conversation_id:
+                logger.info(
+                    "Quick image asset fallback has no candidates",
+                    extra={
+                        "model": model,
+                        "conversation_id": "",
+                        "response_id": response_id,
+                        "candidate_count": 0,
+                    },
+                )
+                break
+
+            remaining = deadline - _quick_image_now()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(_QUICK_IMAGE_POLL_INTERVAL_SEC, remaining))
+
+    if saw_candidates:
+        logger.warning(
+            "Quick image asset probe timed out",
+            extra={
+                "model": model,
+                "conversation_id": conversation_id or "",
+                "response_id": response_id,
+                "candidate_count": len(logged_candidate_urls),
+            },
+        )
+
+    return []
+
+
+async def _augment_quick_image_response_stream(
+    request_result: AppChatRequestResult,
+    *,
+    token: str,
+    model: str,
+) -> AsyncGenerator[str, None]:
+    metadata = getattr(request_result, "metadata", AppChatRequestMetadata())
+    saw_final_image = False
+    saw_streaming_image_event = False
+    preview_urls: List[str] = []
+
+    logger.info(
+        "Quick image wait started",
+        extra={
+            "model": model,
+            "conversation_id": metadata.conversation_id or "",
+        },
+    )
+
+    async for raw_line in request_result:
+        prepared_line, has_final_image, has_streaming_image_event, line_preview_urls = (
+            _prepare_quick_image_raw_line(raw_line)
+        )
+        new_preview_urls = [
+            preview_url
+            for preview_url in line_preview_urls
+            if preview_url not in preview_urls
+        ]
+        if new_preview_urls:
+            preview_urls.extend(new_preview_urls)
+            logger.info(
+                "Quick image preview detected",
+                extra={
+                    "model": model,
+                    "conversation_id": metadata.conversation_id or "",
+                    "response_id": metadata.response_id or "",
+                    "candidate_count": len(
+                        _derive_quick_image_candidate_urls(preview_urls)
+                    ),
+                },
+            )
+        saw_final_image = saw_final_image or has_final_image
+        saw_streaming_image_event = (
+            saw_streaming_image_event or has_streaming_image_event
+        )
+        yield prepared_line
+
+    if saw_final_image:
+        logger.info(
+            "Quick image completed in primary stream",
+            extra={
+                "model": model,
+                "conversation_id": metadata.conversation_id or "",
+            },
+        )
+        return
+
+    if not metadata.conversation_id and not preview_urls:
+        logger.warning(
+            "Quick image wait missing conversation id; degrading to text",
+            extra={
+                "model": model,
+                "response_id": metadata.response_id or "",
+                "has_streaming_image_event": saw_streaming_image_event,
+                "candidate_count": 0,
+            },
+        )
+        return
+
+    if metadata.conversation_id:
+        logger.info(
+            "Quick image entering conversations_v2 wait",
+            extra={
+                "model": model,
+                "conversation_id": metadata.conversation_id,
+                "response_id": metadata.response_id or "",
+                "has_streaming_image_event": saw_streaming_image_event,
+                "candidate_count": len(
+                    _derive_quick_image_candidate_urls(preview_urls)
+                ),
+            },
+        )
+    else:
+        logger.info(
+            "Quick image wait missing conversation id; using asset fallback",
+            extra={
+                "model": model,
+                "conversation_id": "",
+                "response_id": metadata.response_id or "",
+                "candidate_count": len(
+                    _derive_quick_image_candidate_urls(preview_urls)
+                ),
+            },
+        )
+    final_urls = await _poll_quick_image_final_urls(
+        token=token,
+        conversation_id=metadata.conversation_id or "",
+        model=model,
+        preview_urls=preview_urls,
+        response_id=metadata.response_id or "",
+    )
+    if not final_urls:
+        logger.warning(
+            "Quick image wait timed out; degrading to text",
+            extra={
+                "model": model,
+                "conversation_id": metadata.conversation_id or "",
+                "response_id": metadata.response_id or "",
+                "candidate_count": len(
+                    _derive_quick_image_candidate_urls(preview_urls)
+                ),
+            },
+        )
+        return
+
+    logger.info(
+        "Quick image wait completed",
+        extra={
+            "model": model,
+            "conversation_id": metadata.conversation_id or "",
+            "response_id": metadata.response_id or "",
+            "final_image_count": len(final_urls),
+            "candidate_count": len(_derive_quick_image_candidate_urls(preview_urls)),
+        },
+    )
+    yield _build_quick_image_completion_line(
+        final_urls,
+        response_id=metadata.response_id or "",
+    )
+
+
 async def _consume_chat_usage(token_mgr, token: str, model: str) -> None:
     try:
         model_info = ModelService.get(model)
@@ -620,9 +1112,9 @@ class ChatService:
         else:
             show_think = reasoning_effort != "none"
         is_stream = stream if stream is not None else get_config("app.stream")
-        auto_image_intent = model == "grok-auto" and _looks_like_auto_image_prompt(messages)
+        quick_mode_image_intent = _is_quick_mode_image_intent(model, messages)
         quota_requirement = (
-            auto_image_quota_requirement() if auto_image_intent else None
+            image_quota_requirement() if quick_mode_image_intent else None
         )
 
         # 跨 Token 重试循环
@@ -681,53 +1173,23 @@ class ChatService:
                     parallel_tool_calls=parallel_tool_calls,
                 )
 
+                if not isinstance(response, AppChatRequestResult):
+                    response = AppChatRequestResult(
+                        stream=response,
+                        metadata=AppChatRequestMetadata(),
+                    )
+
+                raw_response: AsyncIterable[Any] = response
+                if quick_mode_image_intent:
+                    raw_response = _augment_quick_image_response_stream(
+                        response,
+                        token=token,
+                        model=model,
+                    )
+
                 # 处理响应
                 if is_stream:
                     logger.debug(f"Processing stream response: model={model}")
-                    if quota_requirement:
-                        probed_stream = await _probe_auto_image_stream(
-                            response,
-                            model_name=model_name,
-                            token=token,
-                            show_think=show_think,
-                            tools=tools,
-                            tool_choice=tool_choice,
-                        )
-                        if (
-                            probed_stream.stream_completed
-                            and not probed_stream.found_image_refs
-                        ):
-                            logger.warning(
-                                "Auto image stream finished without rendered image",
-                                extra={
-                                    "model": model,
-                                    "token": f"{token[:10]}...",
-                                    "has_streaming_image_event": probed_stream.has_streaming_image_event,
-                                },
-                            )
-                            if await confirm_quota_exhausted(
-                                token_mgr,
-                                token,
-                                quota_requirement,
-                                exhausted_tokens,
-                            ):
-                                if all_candidate_tokens_exhausted(
-                                    selection_total, exhausted_tokens
-                                ):
-                                    raise image_limit_exception(selection_total)
-                                logger.warning(
-                                    "Auto image stream token hit quota limit, trying next token",
-                                    extra={
-                                        "model": model,
-                                        "attempt": attempt + 1,
-                                        "token": f"{token[:10]}...",
-                                    },
-                                )
-                                continue
-                        return wrap_stream_with_usage(
-                            probed_stream.stream, token_mgr, token, model
-                        )
-
                     processor = StreamProcessor(
                         model_name,
                         token,
@@ -736,7 +1198,7 @@ class ChatService:
                         tool_choice=tool_choice,
                     )
                     return wrap_stream_with_usage(
-                        processor.process(response), token_mgr, token, model
+                        processor.process(raw_response), token_mgr, token, model
                     )
 
                 # 非流式
@@ -746,34 +1208,7 @@ class ChatService:
                     token,
                     tools=tools,
                     tool_choice=tool_choice,
-                ).process(response)
-                if quota_requirement and not _chat_result_has_rendered_image(result):
-                    logger.warning(
-                        "Auto image collect finished without rendered image",
-                        extra={
-                            "model": model,
-                            "token": f"{token[:10]}...",
-                        },
-                    )
-                    if await confirm_quota_exhausted(
-                        token_mgr,
-                        token,
-                        quota_requirement,
-                        exhausted_tokens,
-                    ):
-                        if all_candidate_tokens_exhausted(
-                            selection_total, exhausted_tokens
-                        ):
-                            raise image_limit_exception(selection_total)
-                        logger.warning(
-                            "Auto image collect token hit quota limit, trying next token",
-                            extra={
-                                "model": model,
-                                "attempt": attempt + 1,
-                                "token": f"{token[:10]}...",
-                            },
-                        )
-                        continue
+                ).process(raw_response)
                 await _consume_chat_usage(token_mgr, token, model)
                 return result
 
@@ -792,7 +1227,7 @@ class ChatService:
                         ):
                             raise image_limit_exception(selection_total)
                         logger.warning(
-                            "Auto image request hit quota limit, trying next token",
+                            "Quick image request hit quota limit, trying next token",
                             extra={
                                 "model": model,
                                 "attempt": attempt + 1,

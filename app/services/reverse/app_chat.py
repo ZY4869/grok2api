@@ -2,11 +2,14 @@
 Reverse interface: app chat conversations.
 """
 
-import orjson
+import re
+import time
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import urlparse
 
+import orjson
 from curl_cffi.requests import AsyncSession
 
 from app.core.config import get_config
@@ -25,6 +28,34 @@ CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 APP_CHAT_REQUEST_MODE_ID = "mode_id"
 APP_CHAT_REQUEST_LEGACY_MODEL = "legacy_model"
 APP_CHAT_REQUEST_MODEL_ID_AUTO = "model_id_auto"
+_CONVERSATION_ID_PATTERNS = (
+    re.compile(r"/c/([0-9a-fA-F-]{36})"),
+    re.compile(r"conversationId=([0-9a-fA-F-]{36})"),
+    re.compile(r"/conversations_v2/([0-9a-fA-F-]{36})"),
+)
+_DIRECT_CONVERSATION_ID_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}$")
+_RESPONSE_ID_PATTERNS = (
+    re.compile(r"responseId[\"'=:\s]+([0-9a-fA-F-]{8,64})"),
+    re.compile(r"\brid=([0-9a-fA-F-]{8,64})"),
+)
+
+
+@dataclass
+class AppChatRequestMetadata:
+    conversation_id: Optional[str] = None
+    response_id: Optional[str] = None
+    response_url: str = ""
+    response_headers: Dict[str, str] = field(default_factory=dict)
+    started_at: float = 0.0
+
+
+@dataclass
+class AppChatRequestResult:
+    stream: AsyncGenerator[str, None]
+    metadata: AppChatRequestMetadata
+
+    def __aiter__(self):
+        return self.stream.__aiter__()
 
 
 def _merge_request_overrides(
@@ -54,6 +85,90 @@ def _normalize_chat_proxy(proxy_url: str) -> str:
     if scheme == "socks4":
         return proxy_url.replace("socks4://", "socks4a://", 1)
     return proxy_url
+
+
+def _extract_pattern_match(
+    patterns: tuple[re.Pattern[str], ...], value: str
+) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            found = (match.group(1) or "").strip()
+            if found:
+                return found
+    return None
+
+
+def _extract_conversation_id(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if _DIRECT_CONVERSATION_ID_PATTERN.fullmatch(text):
+        return text
+    return _extract_pattern_match(_CONVERSATION_ID_PATTERNS, text)
+
+
+def _update_metadata_from_value(metadata: AppChatRequestMetadata, value: Any) -> None:
+    if value is None:
+        return
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key or "").strip().lower()
+            if not metadata.conversation_id and key_text in {
+                "conversationid",
+                "conversation_id",
+            }:
+                match = _extract_conversation_id(item)
+                if match:
+                    metadata.conversation_id = match
+            if not metadata.response_id and key_text in {"responseid", "response_id"}:
+                response_id = str(item or "").strip()
+                if response_id:
+                    metadata.response_id = response_id
+            _update_metadata_from_value(metadata, item)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            _update_metadata_from_value(metadata, item)
+        return
+
+    if isinstance(value, str):
+        if not metadata.conversation_id:
+            match = _extract_pattern_match(_CONVERSATION_ID_PATTERNS, value)
+            if match:
+                metadata.conversation_id = match
+        if not metadata.response_id:
+            match = _extract_pattern_match(_RESPONSE_ID_PATTERNS, value)
+            if match:
+                metadata.response_id = match
+
+
+def _update_metadata_from_line(
+    metadata: AppChatRequestMetadata, raw_line: Any
+) -> None:
+    if raw_line is None:
+        return
+
+    text = str(raw_line).strip()
+    if not text:
+        return
+    if text.startswith("data:"):
+        text = text[5:].strip()
+    if not text or text == "[DONE]":
+        return
+
+    try:
+        payload = orjson.loads(text)
+    except orjson.JSONDecodeError:
+        _update_metadata_from_value(metadata, text)
+        return
+
+    _update_metadata_from_value(metadata, payload)
 
 
 def _resolve_request_strategy(
@@ -177,7 +292,7 @@ class AppChatReverse:
         model_config_override: Dict[str, Any] = None,
         use_mode_id: bool = False,
         request_strategy: Optional[str] = None,
-    ) -> Any:
+    ) -> AppChatRequestResult:
         """Send app chat request to Grok."""
         try:
             headers = build_headers(
@@ -229,6 +344,7 @@ class AppChatReverse:
                 )
             browser = get_config("proxy.browser")
             active_proxy_key = None
+            metadata = AppChatRequestMetadata(started_at=time.monotonic())
 
             async def _do_request():
                 nonlocal active_proxy_key
@@ -305,14 +421,26 @@ class AppChatReverse:
                 on_retry=_on_retry,
             )
 
+            metadata.response_url = str(getattr(response, "url", "") or "")
+            try:
+                metadata.response_headers = {
+                    str(k): str(v)
+                    for k, v in dict(getattr(response, "headers", {}) or {}).items()
+                }
+            except Exception:
+                metadata.response_headers = {}
+            _update_metadata_from_value(metadata, metadata.response_url)
+            _update_metadata_from_value(metadata, metadata.response_headers)
+
             async def stream_response():
                 try:
                     async for line in response.aiter_lines():
+                        _update_metadata_from_line(metadata, line)
                         yield line
                 finally:
                     await session.close()
 
-            return stream_response()
+            return AppChatRequestResult(stream=stream_response(), metadata=metadata)
 
         except Exception as e:
             if isinstance(e, UpstreamException):
@@ -343,5 +471,7 @@ __all__ = [
     "APP_CHAT_REQUEST_LEGACY_MODEL",
     "APP_CHAT_REQUEST_MODEL_ID_AUTO",
     "APP_CHAT_REQUEST_MODE_ID",
+    "AppChatRequestMetadata",
+    "AppChatRequestResult",
     "AppChatReverse",
 ]

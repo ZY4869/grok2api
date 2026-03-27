@@ -10,7 +10,9 @@ from app.services.grok.utils.process import _collect_image_references
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
+    AppChatRequestMetadata,
     AppChatReverse,
+    _update_metadata_from_line,
 )
 
 
@@ -34,6 +36,28 @@ def _chat_config(key, default=None):
 
 
 class AppChatProtocolPayloadTests(unittest.TestCase):
+    def test_metadata_extractor_accepts_plain_conversation_id(self):
+        metadata = AppChatRequestMetadata()
+        conversation_id = "123e4567-e89b-12d3-a456-426614174000"
+
+        _update_metadata_from_line(
+            metadata,
+            "data: "
+            + orjson.dumps(
+                {
+                    "result": {
+                        "response": {
+                            "conversationId": conversation_id,
+                            "responseId": "resp-1",
+                        }
+                    }
+                }
+            ).decode(),
+        )
+
+        self.assertEqual(metadata.conversation_id, conversation_id)
+        self.assertEqual(metadata.response_id, "resp-1")
+
     def test_build_payload_supports_model_id_auto_strategy(self):
         payload = AppChatReverse.build_payload(
             message="draw a cat",
