@@ -9,6 +9,45 @@ const state = {
 
 const byId = (id) => document.getElementById(id);
 
+function getAdminModalHelper() {
+  return window.AdminModal && typeof window.AdminModal.open === "function"
+    ? window.AdminModal
+    : null;
+}
+
+function openOverlay(id) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.open(id);
+    return;
+  }
+  const overlay = byId(id);
+  if (!overlay) return;
+  overlay.classList.remove("hidden");
+  requestAnimationFrame(() => overlay.classList.add("is-open"));
+}
+
+function closeOverlay(id, onClosed) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.close(id, { onClosed });
+    return;
+  }
+  const overlay = byId(id);
+  if (!overlay) return;
+  overlay.classList.remove("is-open");
+  setTimeout(() => {
+    overlay.classList.add("hidden");
+    if (typeof onClosed === "function") onClosed();
+  }, 200);
+}
+
+function setupAdminModal() {
+  const helper = getAdminModalHelper();
+  if (!helper) return;
+  helper.register("confirm-overlay", { onRequestClose: () => closeConfirm() });
+}
+
 function setText(id, value) {
   const node = byId(id);
   if (node) node.textContent = value;
@@ -49,6 +88,13 @@ async function readJsonResponse(response) {
 
 function setStatus(message) {
   setText("call-logs-status", message || "");
+}
+
+function setRefreshLoading(isLoading) {
+  const button = byId("refresh-call-logs-btn");
+  if (!button) return;
+  button.disabled = Boolean(isLoading);
+  button.textContent = isLoading ? "刷新中..." : "刷新";
 }
 
 function getFilters() {
@@ -108,13 +154,13 @@ function renderAccounts(accounts = [], summary = {}) {
       (item) => `
         <tr>
           <td class="text-left">${escapeHtml(item.email || "-")}</td>
-          <td class="text-left font-mono text-xs text-gray-500" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
+          <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
           <td class="text-center">${escapeHtml(item.pool || "-")}</td>
           <td class="text-center">${item.call_count || 0}</td>
           <td class="text-center">${item.success_count || 0}</td>
           <td class="text-center">${item.fail_count || 0}</td>
           <td class="text-center">${item.avg_duration_ms || 0} ms</td>
-          <td class="text-center text-xs">${formatTime(item.last_called_at)}</td>
+          <td class="text-center text-xs call-log-time-cell">${formatTime(item.last_called_at)}</td>
         </tr>
       `
     )
@@ -142,11 +188,11 @@ function renderLogs(items = [], pagination = {}) {
             <td class="text-left text-xs">${escapeHtml(item.api_type || "-")}</td>
             <td class="text-left text-xs">${escapeHtml(item.model || "-")}</td>
             <td class="text-left text-xs">${escapeHtml(item.email || "未分配账号")}</td>
-            <td class="text-left font-mono text-xs text-gray-500" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
+            <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
             <td class="text-center text-xs">${escapeHtml(item.pool || "-")}</td>
             <td class="text-center text-xs">${item.duration_ms || 0} ms</td>
-            <td class="text-left font-mono text-xs">${escapeHtml(item.trace_id || "-")}</td>
-            <td class="text-left text-xs">
+            <td class="text-left font-mono text-xs call-log-trace-cell">${escapeHtml(item.trace_id || "-")}</td>
+            <td class="text-left text-xs call-log-error-cell">
               <div>${escapeHtml(item.error_code || "-")}</div>
               <div class="call-log-secondary">${escapeHtml(item.error_message || "")}</div>
             </td>
@@ -315,15 +361,68 @@ function clearCallLogs() {
   });
 }
 
+async function loadCallLogs() {
+  setStatus("加载中...");
+  setRefreshLoading(true);
+  const params = new URLSearchParams();
+  Object.entries(getFilters()).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+
+  try {
+    const response = await fetch(`/v1/admin/call-logs?${params.toString()}`, {
+      headers: buildAuthHeaders(apiKey),
+    });
+    const data = await readJsonResponse(response);
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+    if (!response.ok) {
+      throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
+    }
+    renderAll(data || {});
+    setStatus("");
+  } catch (error) {
+    console.error(error);
+    setStatus("加载失败");
+    showToast(`加载失败：${error.message}`, "error");
+  } finally {
+    setRefreshLoading(false);
+  }
+}
+
+function refreshCallLogs() {
+  loadCallLogs();
+}
+
+function showConfirm(title, message, onConfirm) {
+  const overlay = byId("confirm-overlay");
+  const titleNode = byId("confirm-title");
+  const messageNode = byId("confirm-message");
+  if (!overlay || !titleNode || !messageNode) return;
+  pendingConfirmFn = onConfirm;
+  titleNode.textContent = title;
+  messageNode.textContent = message;
+  openOverlay("confirm-overlay");
+}
+
+function closeConfirm() {
+  pendingConfirmFn = null;
+  closeOverlay("confirm-overlay");
+}
+
 async function init() {
   apiKey = await ensureAdminKey();
   if (apiKey === null) return;
+  setupAdminModal();
   await loadCallLogs();
 }
 
 window.applyFilters = applyFilters;
 window.resetFilters = resetFilters;
 window.changePage = changePage;
+window.refreshCallLogs = refreshCallLogs;
 window.exportCallLogs = exportCallLogs;
 window.clearCallLogs = clearCallLogs;
 window.closeConfirm = closeConfirm;

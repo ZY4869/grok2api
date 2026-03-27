@@ -1,3 +1,9 @@
+.call-logs-page-main {
+  max-width: min(1680px, calc(100vw - 24px));
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
 .call-log-panel {
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -80,11 +86,118 @@
 .call-log-secondary {
   color: var(--accents-4);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.call-log-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.call-log-table th,
+.call-log-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  vertical-align: top;
+}
+
+.call-log-table--accounts th:nth-child(1),
+.call-log-table--accounts td:nth-child(1) {
+  width: 18%;
+}
+
+.call-log-table--accounts th:nth-child(2),
+.call-log-table--accounts td:nth-child(2) {
+  width: 20%;
+}
+
+.call-log-table--accounts th:nth-child(3),
+.call-log-table--accounts td:nth-child(3) {
+  width: 8%;
+}
+
+.call-log-table--accounts th:nth-child(4),
+.call-log-table--accounts td:nth-child(4),
+.call-log-table--accounts th:nth-child(5),
+.call-log-table--accounts td:nth-child(5),
+.call-log-table--accounts th:nth-child(6),
+.call-log-table--accounts td:nth-child(6) {
+  width: 8%;
+}
+
+.call-log-table--accounts th:nth-child(7),
+.call-log-table--accounts td:nth-child(7) {
+  width: 10%;
+}
+
+.call-log-table--accounts th:nth-child(8),
+.call-log-table--accounts td:nth-child(8) {
+  width: 20%;
+}
+
+.call-log-table--details th:nth-child(1),
+.call-log-table--details td:nth-child(1) {
+  width: 11%;
+}
+
+.call-log-table--details th:nth-child(2),
+.call-log-table--details td:nth-child(2) {
+  width: 6%;
+}
+
+.call-log-table--details th:nth-child(3),
+.call-log-table--details td:nth-child(3),
+.call-log-table--details th:nth-child(4),
+.call-log-table--details td:nth-child(4) {
+  width: 9%;
+}
+
+.call-log-table--details th:nth-child(5),
+.call-log-table--details td:nth-child(5),
+.call-log-table--details th:nth-child(6),
+.call-log-table--details td:nth-child(6) {
+  width: 12%;
+}
+
+.call-log-table--details th:nth-child(7),
+.call-log-table--details td:nth-child(7),
+.call-log-table--details th:nth-child(8),
+.call-log-table--details td:nth-child(8) {
+  width: 7%;
+}
+
+.call-log-table--details th:nth-child(9),
+.call-log-table--details td:nth-child(9) {
+  width: 13%;
+}
+
+.call-log-table--details th:nth-child(10),
+.call-log-table--details td:nth-child(10) {
+  width: 14%;
+}
+
+.call-log-token-cell,
+.call-log-trace-cell,
+.call-log-error-cell,
+.call-log-time-cell {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 @media (max-width: 768px) {
+  .call-logs-page-main {
+    max-width: calc(100vw - 16px);
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
   .call-log-panel {
     padding: 14px;
+  }
+
+  .call-log-table {
+    table-layout: auto;
   }
 
   .call-log-summary-card strong {

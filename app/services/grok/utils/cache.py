@@ -4,27 +4,20 @@ Local cache utilities.
 
 from typing import Any, Dict
 
-from app.core.storage import DATA_DIR
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+from app.services.grok.utils.local_assets import LocalAssetStore
 
 
 class CacheService:
     """Local cache service."""
 
     def __init__(self):
-        base_dir = DATA_DIR / "tmp"
-        self.image_dir = base_dir / "image"
-        self.video_dir = base_dir / "video"
-        self.image_dir.mkdir(parents=True, exist_ok=True)
-        self.video_dir.mkdir(parents=True, exist_ok=True)
+        self.store = LocalAssetStore()
 
     def _cache_dir(self, media_type: str):
-        return self.image_dir if media_type == "image" else self.video_dir
+        return self.store.cache_dir(media_type)
 
     def _allowed_exts(self, media_type: str):
-        return IMAGE_EXTS if media_type == "image" else VIDEO_EXTS
+        return self.store.allowed_exts(media_type)
 
     def get_stats(self, media_type: str = "image") -> Dict[str, Any]:
         cache_dir = self._cache_dir(media_type)
@@ -71,7 +64,10 @@ class CacheService:
         paged = items[start : start + page_size]
 
         for item in paged:
-            item["view_url"] = f"/v1/files/{media_type}/{item['name']}"
+            view_url = self.store.build_public_url(media_type, item["name"])
+            item["view_url"] = view_url
+            if media_type == "image":
+                item["preview_url"] = view_url
 
         return {"total": total, "page": page, "page_size": page_size, "items": paged}
 

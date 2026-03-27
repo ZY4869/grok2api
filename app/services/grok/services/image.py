@@ -6,14 +6,12 @@ import asyncio
 import base64
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterable, Dict, List, Optional, Union
 
 import orjson
 
 from app.core.config import get_config
 from app.core.logger import logger
-from app.core.storage import DATA_DIR
 from app.core.exceptions import AppException, ErrorType, UpstreamException
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.image_edit import (
@@ -21,6 +19,7 @@ from app.services.grok.services.image_edit import (
     ImageStreamProcessor as AppChatImageStreamProcessor,
 )
 from app.services.grok.utils.process import BaseProcessor
+from app.services.grok.utils.local_assets import LocalAssetStore
 from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
@@ -791,14 +790,7 @@ class ImageWSBaseProcessor(BaseProcessor):
             self.response_field = "base64"
         else:
             self.response_field = "b64_json"
-        self._image_dir: Optional[Path] = None
-
-    def _ensure_image_dir(self) -> Path:
-        if self._image_dir is None:
-            base_dir = DATA_DIR / "tmp" / "image"
-            base_dir.mkdir(parents=True, exist_ok=True)
-            self._image_dir = base_dir
-        return self._image_dir
+        self._asset_store = LocalAssetStore()
 
     def _strip_base64(self, blob: str) -> str:
         if not blob:
@@ -872,37 +864,25 @@ class ImageWSBaseProcessor(BaseProcessor):
         return raw, ext
 
     def _filename(self, image_id: str, is_final: bool, ext: Optional[str] = None) -> str:
-        ext = self._normalize_ext(ext)
-        if not ext:
-            ext = "jpg" if is_final else "png"
-        return f"{image_id}.{ext}"
-
-    def _build_file_url(self, filename: str) -> str:
-        app_url = get_config("app.app_url")
-        if app_url:
-            return f"{app_url.rstrip('/')}/v1/files/image/{filename}"
-        return f"/v1/files/image/{filename}"
+        return self._asset_store.build_generated_image_filename(
+            image_id,
+            is_final=is_final,
+            ext=ext,
+        )
 
     async def _save_blob(
         self, image_id: str, blob: str, is_final: bool, ext: Optional[str] = None
     ) -> str:
         if not self._strip_base64(blob):
             return ""
-        image_dir = self._ensure_image_dir()
         file_bytes, output_ext = self._resolve_file_payload(
             blob,
             is_final=is_final,
             explicit_ext=ext,
         )
         filename = self._filename(image_id, is_final, ext=output_ext)
-        filepath = image_dir / filename
-
-        def _write_file():
-            with open(filepath, "wb") as f:
-                f.write(file_bytes)
-
-        await asyncio.to_thread(_write_file)
-        return self._build_file_url(filename)
+        await self._asset_store.write_bytes("image", filename, file_bytes)
+        return self._asset_store.build_public_url("image", filename)
 
     def _pick_best(self, existing: Optional[Dict], incoming: Dict) -> Dict:
         if not existing:

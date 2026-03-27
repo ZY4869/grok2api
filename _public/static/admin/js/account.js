@@ -11,6 +11,49 @@ const REAL_QUOTA_DISPLAY_MODES = {
 let realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
 
 const byId = (id) => document.getElementById(id);
+
+function getAdminModalHelper() {
+  return window.AdminModal && typeof window.AdminModal.open === "function"
+    ? window.AdminModal
+    : null;
+}
+
+function openOverlay(id) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.open(id);
+    return;
+  }
+  const modal = byId(id);
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    modal.classList.add("is-open");
+  });
+}
+
+function closeOverlay(id, onClosed) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.close(id, { onClosed });
+    return;
+  }
+  const modal = byId(id);
+  if (!modal) return;
+  modal.classList.remove("is-open");
+  setTimeout(() => {
+    modal.classList.add("hidden");
+    if (typeof onClosed === "function") onClosed();
+  }, 200);
+}
+
+function setupAdminModals() {
+  const helper = getAdminModalHelper();
+  if (!helper) return;
+  helper.register("import-modal", { onRequestClose: () => closeImportModal() });
+  helper.register("edit-modal", { onRequestClose: () => closeEditModal() });
+  helper.register("confirm-overlay", { onRequestClose: () => closeConfirm() });
+}
 const CHECK_ALL_BUTTON_HTML = `
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
@@ -600,6 +643,7 @@ async function init() {
 
   realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
   ensureImportController();
+  setupAdminModals();
   await loadAccountData();
 }
 
@@ -671,6 +715,50 @@ function getSelected() {
   return allTokens.filter((item) => item._selected);
 }
 
+async function requestDeleteTokens(tokens) {
+  const response = await fetch("/v1/admin/tokens/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(apiKey),
+    },
+    body: JSON.stringify({ tokens }),
+  });
+  const data = await readJsonResponse(response);
+
+  if (!response.ok || !data || data.status !== "success") {
+    throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+async function deleteTokens(tokens, successMessage) {
+  const uniqueTokens = Array.from(
+    new Set(
+      (Array.isArray(tokens) ? tokens : [])
+        .map((token) => String(token || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (uniqueTokens.length === 0) {
+    showToast("请先选择账号", "info");
+    return false;
+  }
+
+  try {
+    const result = await requestDeleteTokens(uniqueTokens);
+    await loadAccountData();
+    showToast(successMessage || `已删除 ${result.deleted || 0} 个账号`, "success");
+    return true;
+  } catch (error) {
+    console.error(error);
+    showToast(`删除失败：${error.message}`, "error");
+    return false;
+  }
+}
+
 function getRealQuotaTargets() {
   const selected = getSelected();
   if (selected.length > 0) {
@@ -730,6 +818,21 @@ async function batchDisable() {
 
   await loadAccountData();
   showToast(`已禁用 ${selected.length} 个账号`, "success");
+}
+
+function batchDeleteSelected() {
+  const selected = getSelected();
+  if (selected.length === 0) {
+    showToast("请先选择账号", "info");
+    return;
+  }
+
+  showConfirm("删除选中账号", `确认删除 ${selected.length} 个选中账号？`, async () => {
+    await deleteTokens(
+      selected.map((item) => item.token),
+      `已删除 ${selected.length} 个选中账号`
+    );
+  });
 }
 
 async function toggleSingleStatus(index) {
@@ -1009,23 +1112,12 @@ function showConfirm(title, message, onConfirm) {
   pendingConfirmFn = onConfirm;
   titleNode.textContent = title;
   messageNode.textContent = message;
-
-  modal.classList.remove("hidden");
-  requestAnimationFrame(() => {
-    modal.classList.add("is-open");
-  });
+  openOverlay("confirm-overlay");
 }
 
 function closeConfirm() {
-  const modal = byId("confirm-overlay");
-  if (modal) {
-    modal.classList.remove("is-open");
-    setTimeout(() => {
-      modal.classList.add("hidden");
-    }, 200);
-  }
-
   pendingConfirmFn = null;
+  closeOverlay("confirm-overlay");
 }
 
 function confirmAction() {
@@ -1250,6 +1342,49 @@ function downloadTemplate() {
 async function submitImport() {
   const controller = ensureImportController();
   if (controller) await controller.submitImport();
+}
+
+function cleanExpired() {
+  const expired = allTokens.filter((item) => item.alive === false || item.status === "expired");
+  if (expired.length === 0) {
+    showToast("没有失效账号需要清理", "info");
+    return;
+  }
+
+  showConfirm("清理失效账号", `确认删除 ${expired.length} 个失效账号？`, async () => {
+    await deleteTokens(
+      expired.map((item) => item.token),
+      `已清理 ${expired.length} 个失效账号`
+    );
+  });
+}
+
+function deleteSingle(token) {
+  showConfirm("删除账号", "确认删除此 Token？", async () => {
+    await deleteTokens([token], "账号已删除");
+  });
+}
+
+function openEditModal(index) {
+  const item = allTokens[index];
+  const modal = byId("edit-modal");
+  if (!item || !modal) return;
+
+  editingToken = item.token;
+  const tokenNode = byId("edit-token-display");
+  const emailInput = byId("edit-email");
+  const poolInput = byId("edit-pool");
+
+  if (tokenNode) tokenNode.textContent = item.token;
+  if (emailInput) emailInput.value = item.email || "";
+  if (poolInput) poolInput.value = item.pool || "ssoBasic";
+
+  openOverlay("edit-modal");
+}
+
+function closeEditModal() {
+  editingToken = null;
+  closeOverlay("edit-modal");
 }
 
 window.addEventListener("load", init);

@@ -19,6 +19,20 @@ const qsa = (selector) => document.querySelectorAll(selector);
 const DEFAULT_QUOTA_BASIC = 80;
 const DEFAULT_QUOTA_SUPER = 140;
 
+function getAdminModalHelper() {
+  return window.AdminModal && typeof window.AdminModal.open === 'function'
+    ? window.AdminModal
+    : null;
+}
+
+function setupAdminModals() {
+  const helper = getAdminModalHelper();
+  if (!helper) return;
+  helper.register('import-modal', { onRequestClose: () => closeImportModal() });
+  helper.register('edit-modal', { onRequestClose: () => closeEditModal() });
+  helper.register('confirm-dialog', { onRequestClose: () => closeConfirm(false) });
+}
+
 function hasTokenTableView() {
   return Boolean(byId('token-table-body'));
 }
@@ -39,6 +53,11 @@ function setText(id, text) {
 }
 
 function openModal(id) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.open(id);
+    return byId(id);
+  }
   const modal = byId(id);
   if (!modal) return null;
   modal.classList.remove('hidden');
@@ -49,6 +68,11 @@ function openModal(id) {
 }
 
 function closeModal(id, onClose) {
+  const helper = getAdminModalHelper();
+  if (helper) {
+    helper.close(id, { onClosed: onClose });
+    return;
+  }
   const modal = byId(id);
   if (!modal) return;
   modal.classList.remove('is-open');
@@ -122,6 +146,7 @@ async function init() {
   if (apiKey === null) return;
   setupEditPoolDefaults();
   setupConfirmDialog();
+  setupAdminModals();
   if (hasTokenTableView()) {
     setupSelectAllMenu();
     refreshPageSizeOptionsI18n();
@@ -1180,11 +1205,6 @@ function setupConfirmDialog() {
   if (!dialog) return;
   const okBtn = byId('confirm-ok');
   const cancelBtn = byId('confirm-cancel');
-  dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) {
-      closeConfirm(false);
-    }
-  });
   if (okBtn) okBtn.addEventListener('click', () => closeConfirm(true));
   if (cancelBtn) cancelBtn.addEventListener('click', () => closeConfirm(false));
 }
@@ -1202,24 +1222,18 @@ function confirmAction(message, options = {}) {
   if (cancelBtn) cancelBtn.textContent = options.cancelText || t('common.cancel');
   return new Promise(resolve => {
     confirmResolver = resolve;
-    dialog.classList.remove('hidden');
-    requestAnimationFrame(() => {
-      dialog.classList.add('is-open');
-    });
+    openModal('confirm-dialog');
   });
 }
 
 function closeConfirm(ok) {
-  const dialog = byId('confirm-dialog');
-  if (!dialog) return;
-  dialog.classList.remove('is-open');
-  setTimeout(() => {
-    dialog.classList.add('hidden');
+  if (!byId('confirm-dialog')) return;
+  closeModal('confirm-dialog', () => {
     if (confirmResolver) {
       confirmResolver(ok);
       confirmResolver = null;
     }
-  }, 200);
+  });
 }
 
 function escapeHtml(text) {

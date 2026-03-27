@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services.grok.services import image as image_module
+from app.services.grok.utils import local_assets as local_assets_module
 
 
 def _make_blob(raw: bytes, mime: str | None = None) -> str:
@@ -38,16 +39,16 @@ class ImageSaveFormatTests(unittest.IsolatedAsyncioTestCase):
         return self.data_dir / "tmp" / "image" / filename
 
     async def test_preserves_detected_extensions(self):
-        processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
         png_blob = _make_blob(PNG_RAW, "image/png")
         jpg_blob = _make_blob(JPEG_RAW, "image/jpeg")
         webp_blob = _make_blob(WEBP_RAW, "image/webp")
 
-        with patch.object(image_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             image_module,
             "get_config",
             side_effect=self._config_side_effect(),
         ):
+            processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
             png_url = await processor._save_blob("png-image", png_blob, True)
             jpg_url = await processor._save_blob("jpg-image", jpg_blob, True)
             webp_url = await processor._save_blob("webp-image", webp_blob, True)
@@ -60,29 +61,29 @@ class ImageSaveFormatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._saved_path(webp_url).read_bytes(), WEBP_RAW)
 
     async def test_detects_final_signature_without_mime(self):
-        processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
         blob = _make_blob(PNG_RAW)
 
-        with patch.object(image_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             image_module,
             "get_config",
             side_effect=self._config_side_effect(),
         ):
+            processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
             url = await processor._save_blob("signature-image", blob, True)
 
         self.assertTrue(url.endswith(".png"))
         self.assertEqual(self._saved_path(url).read_bytes(), PNG_RAW)
 
     async def test_keeps_existing_fallback_for_unknown_format(self):
-        processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
         raw = b"not-a-known-image-format"
         blob = _make_blob(raw)
 
-        with patch.object(image_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             image_module,
             "get_config",
             side_effect=self._config_side_effect(),
         ):
+            processor = image_module.ImageWSBaseProcessor("grok-imagine-1.0", response_format="url")
             final_url = await processor._save_blob("fallback-final", blob, True)
             preview_url = await processor._save_blob("fallback-preview", blob, False)
 

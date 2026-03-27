@@ -7,18 +7,14 @@ Download service for assets.grok.com.
 import asyncio
 import base64
 import hashlib
-import os
-import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-import aiofiles
-
 from app.core.logger import logger
-from app.core.storage import DATA_DIR
 from app.core.config import get_config
 from app.core.exceptions import AppException
+from app.services.grok.utils.local_assets import LocalAssetStore
 from app.services.reverse.assets_download import AssetsDownloadReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.grok.utils.locks import _get_download_semaphore, _file_lock
@@ -29,11 +25,7 @@ class DownloadService:
 
     def __init__(self):
         self._session: Optional[ResettableSession] = None
-        base_dir = DATA_DIR / "tmp"
-        self.image_dir = base_dir / "image"
-        self.video_dir = base_dir / "video"
-        self.image_dir.mkdir(parents=True, exist_ok=True)
-        self.video_dir.mkdir(parents=True, exist_ok=True)
+        self.store = LocalAssetStore()
         self._cleanup_running = False
 
     async def create(self) -> ResettableSession:
@@ -91,39 +83,6 @@ class DownloadService:
             path = f"/{path}"
         return path
 
-    def _legacy_cache_name(self, file_path: str) -> str:
-        path = self._normalize_download_target(file_path, preserve_absolute=False)
-        cache_key = urlparse(path).path or path
-        filename = cache_key.lstrip("/").replace("/", "-")
-        return filename or "asset"
-
-    def _sanitize_cache_part(self, value: str) -> str:
-        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value or "").strip("-._")
-        return cleaned or "asset"
-
-    def _source_cache_name(self, file_path: str, media_type: str = "image") -> str:
-        asset_url = self._asset_url(file_path)
-        parsed = urlparse(asset_url)
-        path = parsed.path or ""
-        ext = Path(path).suffix.lower()
-        if not ext:
-            ext = ".mp4" if media_type == "video" else ".jpg"
-        stem_path = path
-        if ext and stem_path.lower().endswith(ext):
-            stem_path = stem_path[: -len(ext)]
-        stem = self._sanitize_cache_part((stem_path.strip("/") or "root").replace("/", "-"))
-        host = self._sanitize_cache_part(parsed.netloc.lower() or "assets-grok-com")
-        digest = hashlib.sha1(asset_url.encode()).hexdigest()[:12]
-        return f"{host}-{stem}-{digest}{ext}"
-
-    def _local_file_url(self, media_type: str, filename: str) -> str:
-        filename = (filename or "").replace("\\", "-").replace("/", "-")
-        path = f"/v1/files/{media_type}/{filename}"
-        app_url = get_config("app.app_url") or ""
-        if app_url:
-            return f"{app_url.rstrip('/')}{path}"
-        return path
-
     async def _download_to_cache(
         self,
         request_target: str,
@@ -132,8 +91,10 @@ class DownloadService:
         filename: str,
     ) -> Tuple[Optional[Path], str]:
         async with _get_download_semaphore():
-            cache_dir = self.image_dir if media_type == "image" else self.video_dir
-            safe_name = (filename or "asset").replace("\\", "-").replace("/", "-")
+            cache_dir = self.store.cache_dir(media_type)
+            safe_name = self.store.sanitize_filename(
+                filename or "", fallback=f"{media_type}-asset"
+            )
             cache_path = cache_dir / safe_name
 
             lock_name = (
@@ -146,22 +107,20 @@ class DownloadService:
                     session, token, request_target
                 )
 
-                tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-                try:
-                    async with aiofiles.open(tmp_path, "wb") as f:
-                        if hasattr(response, "aiter_content"):
-                            async for chunk in response.aiter_content():
-                                if chunk:
-                                    await f.write(chunk)
-                        else:
-                            await f.write(response.content)
-                    os.replace(tmp_path, cache_path)
-                finally:
-                    if tmp_path.exists() and not cache_path.exists():
-                        try:
-                            tmp_path.unlink()
-                        except Exception:
-                            pass
+                if hasattr(response, "aiter_content"):
+                    chunks = bytearray()
+                    async for chunk in response.aiter_content():
+                        if chunk:
+                            chunks.extend(chunk)
+                    payload = bytes(chunks)
+                else:
+                    payload = response.content
+
+                cache_path = await self.store.write_bytes(
+                    media_type,
+                    safe_name,
+                    payload,
+                )
 
                 mime = response.headers.get(
                     "content-type", "application/octet-stream"
@@ -181,11 +140,11 @@ class DownloadService:
             request_target = self._normalize_download_target(
                 path_or_url, preserve_absolute=True
             )
-            filename = self._source_cache_name(path_or_url, media_type)
+            filename = self.store.build_source_filename(path_or_url, media_type)
             cache_path, _ = await self._download_to_cache(
                 request_target, token, media_type, filename
             )
-            local_url = self._local_file_url(media_type, cache_path.name)
+            local_url = self.store.build_public_url(media_type, cache_path.name)
             logger.info(
                 "Localized video asset",
                 extra={
@@ -213,16 +172,37 @@ class DownloadService:
         self, path_or_url: str, token: str, media_type: str = "image"
     ) -> str:
         asset_url = self._asset_url(path_or_url)
-        path = self._normalize_download_target(path_or_url, preserve_absolute=False)
-        parsed = urlparse(asset_url)
-
-        app_url = get_config("app.app_url")
-        if app_url:
-            if parsed and parsed.netloc and parsed.netloc != "assets.grok.com":
-                return asset_url
-            await self.download_file(asset_url, token, media_type)
-            return f"{app_url.rstrip('/')}/v1/files/{media_type}{path}"
-        return asset_url
+        try:
+            filename = self.store.build_source_filename(asset_url, media_type)
+            cache_path, _ = await self._download_to_cache(
+                asset_url,
+                token,
+                media_type,
+                filename,
+            )
+            local_url = self.store.build_public_url(media_type, cache_path.name)
+            logger.info(
+                "Localized image asset",
+                extra={
+                    "asset_type": media_type,
+                    "upstream_host": urlparse(asset_url).netloc or "assets.grok.com",
+                    "download_result": "localized",
+                    "cache_name": cache_path.name,
+                },
+            )
+            return local_url
+        except Exception as e:
+            logger.warning(
+                "Localized image asset fallback",
+                extra={
+                    "asset_type": media_type,
+                    "upstream_host": urlparse(asset_url).netloc or "assets.grok.com",
+                    "download_result": "fallback",
+                    "fallback_reason": str(e),
+                    "cache_name": "",
+                },
+            )
+            return asset_url
 
     async def render_image(
         self, url: str, token: str, image_id: str = "image"
@@ -277,7 +257,7 @@ class DownloadService:
                 raise AppException("Invalid file path", code="invalid_file_path")
             if file_path.startswith("data:"):
                 raise AppException("Invalid file path", code="invalid_file_path")
-            file_path = self._normalize_path(file_path)
+            file_path = self._asset_url(file_path)
             lock_name = f"dl_b64_{hashlib.sha1(file_path.encode()).hexdigest()[:16]}"
             lock_timeout = max(1, int(get_config("asset.download_timeout")))
             async with _get_download_semaphore():
@@ -322,7 +302,7 @@ class DownloadService:
             Tuple[Optional[Path], str]: The path of the downloaded file and the MIME type.
         """
         request_target = self._normalize_download_target(file_path, preserve_absolute=True)
-        filename = self._legacy_cache_name(file_path)
+        filename = self.store.build_source_filename(file_path, media_type)
         return await self._download_to_cache(
             request_target, token, media_type, filename
         )
@@ -347,7 +327,7 @@ class DownloadService:
                     total_size = 0
                     all_files: List[Tuple[Path, float, int]] = []
 
-                    for d in [self.image_dir, self.video_dir]:
+                    for d in [self.store.image_dir, self.store.video_dir]:
                         if d.exists():
                             for f in d.glob("*"):
                                 if f.is_file():

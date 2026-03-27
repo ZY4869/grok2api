@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.api.v1.chat import router as chat_router
 from app.api.v1.video import router as video_router
 from app.services.grok.utils import download as download_module
+from app.services.grok.utils import local_assets as local_assets_module
 
 
 class _DummyResponse:
@@ -56,7 +57,7 @@ class VideoDownloadLocalizationTests(unittest.IsolatedAsyncioTestCase):
             return_value=_DummyResponse(b"video-bytes", "video/mp4")
         )
 
-        with patch.object(download_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             download_module, "get_config", side_effect=self._config_side_effect()
         ), patch.object(
             download_module, "_get_download_semaphore", return_value=asyncio.Semaphore(1)
@@ -88,7 +89,7 @@ class VideoDownloadLocalizationTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        with patch.object(download_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             download_module, "get_config", side_effect=self._config_side_effect()
         ), patch.object(
             download_module, "_get_download_semaphore", return_value=asyncio.Semaphore(1)
@@ -105,12 +106,38 @@ class VideoDownloadLocalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((self.data_dir / "tmp" / "video" / first_local.rsplit("/", 1)[-1]).exists())
         self.assertTrue((self.data_dir / "tmp" / "video" / second_local.rsplit("/", 1)[-1]).exists())
 
+    async def test_resolve_url_localizes_image_when_app_url_is_empty(self):
+        image_url = "https://cdn.example.com/generated/image.jpg?sig=abc"
+        request_mock = AsyncMock(
+            return_value=_DummyResponse(b"image-bytes", "image/jpeg")
+        )
+
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
+            download_module, "get_config", side_effect=self._config_side_effect()
+        ), patch.object(
+            download_module, "_get_download_semaphore", return_value=asyncio.Semaphore(1)
+        ), patch.object(
+            download_module, "_file_lock", _noop_file_lock
+        ), patch.object(
+            download_module.AssetsDownloadReverse, "request", request_mock
+        ):
+            service = self._service()
+            localized = await service.resolve_url(image_url, "token", "image")
+
+        self.assertTrue(localized.startswith("/v1/files/image/"))
+        filename = localized.rsplit("/", 1)[-1]
+        self.assertEqual(
+            (self.data_dir / "tmp" / "image" / filename).read_bytes(),
+            b"image-bytes",
+        )
+        self.assertEqual(request_mock.await_args.args[2], image_url)
+
     async def test_render_video_url_returns_local_relative_path(self):
         request_mock = AsyncMock(
             return_value=_DummyResponse(b"video-bytes", "video/mp4")
         )
 
-        with patch.object(download_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             download_module,
             "get_config",
             side_effect=self._config_side_effect(**{"app.video_format": "url"}),
@@ -134,7 +161,7 @@ class VideoDownloadLocalizationTests(unittest.IsolatedAsyncioTestCase):
             return_value=_DummyResponse(b"video-bytes", "video/mp4")
         )
 
-        with patch.object(download_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             download_module,
             "get_config",
             side_effect=self._config_side_effect(**{"app.video_format": "markdown"}),
@@ -160,7 +187,7 @@ class VideoDownloadLocalizationTests(unittest.IsolatedAsyncioTestCase):
                 return _DummyResponse(b"image-bytes", "image/jpeg")
             return _DummyResponse(b"video-bytes", "video/mp4")
 
-        with patch.object(download_module, "DATA_DIR", self.data_dir), patch.object(
+        with patch.object(local_assets_module, "DATA_DIR", self.data_dir), patch.object(
             download_module,
             "get_config",
             side_effect=self._config_side_effect(**{"app.video_format": "html"}),

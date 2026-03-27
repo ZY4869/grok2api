@@ -444,7 +444,10 @@
 
       const modal = getImportModal();
       if (!modal) return;
-
+      if (global.AdminModal && typeof global.AdminModal.open === "function") {
+        global.AdminModal.open("import-modal");
+        return;
+      }
       modal.classList.remove("hidden");
       requestAnimationFrame(() => {
         modal.classList.add("is-open");
@@ -457,7 +460,10 @@
       const modal = getImportModal();
       resetState();
       if (!modal) return;
-
+      if (global.AdminModal && typeof global.AdminModal.close === "function") {
+        global.AdminModal.close("import-modal");
+        return;
+      }
       modal.classList.remove("is-open");
       setTimeout(() => {
         modal.classList.add("hidden");

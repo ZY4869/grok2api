@@ -156,6 +156,54 @@ async def update_tokens(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/tokens/delete", dependencies=[Depends(verify_app_key)])
+async def delete_tokens(data: dict):
+    """Delete tokens across pools by token value."""
+    storage = get_storage()
+    tokens = _collect_request_tokens(data or {})
+    if not tokens:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    try:
+        async with storage.acquire_lock("tokens_delete", timeout=10):
+            existing = await storage.load_tokens() or {}
+            existing_tokens = set()
+            for pool_tokens in existing.values():
+                if not isinstance(pool_tokens, list):
+                    continue
+                for item in pool_tokens:
+                    if isinstance(item, str):
+                        token_value = _sanitize_token_text(item)
+                    elif isinstance(item, dict):
+                        token_value = _sanitize_token_text(item.get("token"))
+                    else:
+                        token_value = ""
+                    if token_value:
+                        existing_tokens.add(token_value)
+
+            deleted_tokens = [token for token in tokens if token in existing_tokens]
+            await storage.save_tokens_delta([], deleted=deleted_tokens)
+            mgr = await get_token_manager()
+            await mgr.reload()
+
+        logger.info(
+            "Admin deleted tokens",
+            extra={
+                "requested": len(tokens),
+                "deleted": len(deleted_tokens),
+            },
+        )
+        return {
+            "status": "success",
+            "requested": len(tokens),
+            "deleted": len(deleted_tokens),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tokens/refresh", dependencies=[Depends(verify_app_key)])
 async def refresh_tokens(data: dict):
     """刷新 Token 状态"""

@@ -328,6 +328,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 24px;
+      overflow-y: auto;
+      box-sizing: border-box;
       background: rgba(250, 250, 250, 0.82);
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
@@ -351,6 +354,8 @@
       padding: 16px;
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
       width: 100%;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
       transform: scale(0.96);
       transition: transform 0.2s ease;
       font-size: 13px;
