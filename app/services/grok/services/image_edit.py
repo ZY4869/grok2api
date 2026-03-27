@@ -751,26 +751,47 @@ class ImageStreamProcessor(BaseProcessor):
 
                 resp = data.get("result", {}).get("response", {})
 
-                # Image generation progress
+                # Image generation progress — also extract embedded URLs
                 if img := resp.get("streamingImageGenerationResponse"):
-                    image_index = img.get("imageIndex", 0)
-                    progress = img.get("progress", 0)
-
-                    if self.n == 1 and image_index != self.target_index:
-                        continue
-
-                    out_index = 0 if self.n == 1 else image_index
-
-                    if not self.chat_format:
-                        yield self._sse(
-                            "image_generation.partial_image",
-                            {
-                                "type": "image_generation.partial_image",
-                                self.response_field: "",
-                                "index": out_index,
-                                "progress": progress,
+                    # Check for image URLs inside the streaming event
+                    streaming_refs = _collect_image_references(
+                        {"streamingImageGenerationResponse": img}
+                    )
+                    if streaming_refs:
+                        logger.debug(
+                            "Image stream parsed URLs from streamingImageGenerationResponse",
+                            extra={
+                                "image_response_shape": ",".join(
+                                    sorted({ref.source_shape for ref in streaming_refs})
+                                ),
+                                "model_id": self.model,
                             },
                         )
+                        for ref in streaming_refs:
+                            output = await self._resolve_image_output(ref.url)
+                            if output and output not in seen_outputs:
+                                seen_outputs.add(output)
+                                final_images.append(output)
+                    else:
+                        # Pure progress event — emit partial_image
+                        image_index = img.get("imageIndex", 0)
+                        progress = img.get("progress", 0)
+
+                        if self.n == 1 and image_index != self.target_index:
+                            continue
+
+                        out_index = 0 if self.n == 1 else image_index
+
+                        if not self.chat_format:
+                            yield self._sse(
+                                "image_generation.partial_image",
+                                {
+                                    "type": "image_generation.partial_image",
+                                    self.response_field: "",
+                                    "index": out_index,
+                                    "progress": progress,
+                                },
+                            )
                     continue
 
                 refs = _collect_image_references(resp)
