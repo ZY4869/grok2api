@@ -119,6 +119,83 @@ async def _render_image(url: str, token: str, image_id: str = "image") -> str:
 
 
 class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_non_stream_state_wait_recovers_image_after_short_text_without_prompt(self):
+        token_mgr = DummyChatTokenManager()
+        request_result = _request_result(_text_payload("Okay"))
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=token_mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
+        ), patch(
+            "app.services.grok.services.chat.select_token_for_requirement",
+            new=AsyncMock(
+                return_value=TokenSelectionResult(token="token-a", total_candidates=1)
+            ),
+        ), patch(
+            "app.services.grok.services.chat.GrokChatService.chat_openai",
+            new=AsyncMock(return_value=(request_result, False, "grok-auto")),
+        ), patch(
+            "app.services.grok.services.chat._poll_quick_image_final_urls",
+            new=AsyncMock(return_value=[FINAL_URL]),
+        ) as poll_mock, patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            result = await ChatService.completions(
+                model="grok-auto",
+                messages=[{"role": "user", "content": "hello there"}],
+                stream=False,
+            )
+
+        content = result["choices"][0]["message"]["content"]
+        self.assertIn("Okay", content)
+        self.assertIn(FINAL_URL, content)
+        poll_mock.assert_awaited_once()
+
+    async def test_non_stream_state_wait_recovers_image_after_empty_text(self):
+        token_mgr = DummyChatTokenManager()
+        request_result = _request_result(_text_payload(""))
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=token_mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
+        ), patch(
+            "app.services.grok.services.chat.select_token_for_requirement",
+            new=AsyncMock(
+                return_value=TokenSelectionResult(token="token-a", total_candidates=1)
+            ),
+        ), patch(
+            "app.services.grok.services.chat.GrokChatService.chat_openai",
+            new=AsyncMock(return_value=(request_result, False, "grok-auto")),
+        ), patch(
+            "app.services.grok.services.chat._poll_quick_image_final_urls",
+            new=AsyncMock(return_value=[FINAL_URL]),
+        ) as poll_mock, patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            result = await ChatService.completions(
+                model="grok-auto",
+                messages=[{"role": "user", "content": "hello there"}],
+                stream=False,
+            )
+
+        content = result["choices"][0]["message"]["content"]
+        self.assertIn(FINAL_URL, content)
+        poll_mock.assert_awaited_once()
+
     async def test_non_stream_waits_for_asset_fallback_on_all_quick_models(self):
         for model in ("grok-auto", "grok-3-fast", "grok-4-expert"):
             token_mgr = DummyChatTokenManager()
@@ -176,6 +253,9 @@ class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
             "app.services.grok.services.chat.get_config",
             side_effect=_chat_config,
         ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
+        ), patch(
             "app.services.grok.services.chat.select_token_for_requirement",
             new=AsyncMock(
                 return_value=TokenSelectionResult(token="token-a", total_candidates=1)
@@ -215,6 +295,9 @@ class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "app.services.grok.services.chat.get_config",
             side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
         ), patch(
             "app.services.grok.services.chat.select_token_for_requirement",
             new=AsyncMock(
@@ -256,6 +339,9 @@ class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "app.services.grok.services.chat.get_config",
             side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
         ), patch(
             "app.services.grok.services.chat.select_token_for_requirement",
             new=AsyncMock(
@@ -360,6 +446,46 @@ class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
         conversation_mock.assert_awaited_once()
         asset_mock.assert_awaited_once()
 
+    async def test_non_stream_state_wait_skips_long_text_without_prompt(self):
+        token_mgr = DummyChatTokenManager()
+        long_text = "This is a normal quick-mode answer with enough characters to skip recovery."
+        request_result = _request_result(_text_payload(long_text))
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=token_mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
+        ), patch(
+            "app.services.grok.services.chat.select_token_for_requirement",
+            new=AsyncMock(
+                return_value=TokenSelectionResult(token="token-a", total_candidates=1)
+            ),
+        ), patch(
+            "app.services.grok.services.chat.GrokChatService.chat_openai",
+            new=AsyncMock(return_value=(request_result, False, "grok-auto")),
+        ), patch(
+            "app.services.grok.services.chat._poll_quick_image_final_urls",
+            new=AsyncMock(return_value=[FINAL_URL]),
+        ) as poll_mock, patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            result = await ChatService.completions(
+                model="grok-auto",
+                messages=[{"role": "user", "content": "hello there"}],
+                stream=False,
+            )
+
+        content = result["choices"][0]["message"]["content"]
+        self.assertEqual(content, long_text)
+        self.assertNotIn(FINAL_URL, content)
+        poll_mock.assert_not_awaited()
+
     async def test_stream_waits_until_asset_fallback_returns_final_image(self):
         token_mgr = DummyChatTokenManager()
         request_result = _request_result(_token_payload(), _preview_payload())
@@ -397,6 +523,42 @@ class QuickImageWaitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(FINAL_URL, joined)
         self.assertIn("[DONE]", joined)
         self.assertNotIn(PREVIEW_URL, joined)
+
+    async def test_stream_state_wait_delays_done_until_recovered_image(self):
+        token_mgr = DummyChatTokenManager()
+        request_result = _request_result(_token_payload("Hi"))
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=token_mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.services.chat.pick_token",
+            new=AsyncMock(return_value="token-a"),
+        ), patch(
+            "app.services.grok.services.chat.GrokChatService.chat_openai",
+            new=AsyncMock(return_value=(request_result, True, "grok-auto")),
+        ), patch(
+            "app.services.grok.services.chat._poll_quick_image_final_urls",
+            new=AsyncMock(return_value=[FINAL_URL]),
+        ) as poll_mock, patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            stream = await ChatService.completions(
+                model="grok-auto",
+                messages=[{"role": "user", "content": "hello there"}],
+                stream=True,
+            )
+            chunks = [chunk async for chunk in stream]
+
+        joined = "".join(chunks)
+        self.assertIn('"content":"Hi"', joined)
+        self.assertIn(FINAL_URL, joined)
+        self.assertLess(joined.index(FINAL_URL), joined.index("[DONE]"))
+        poll_mock.assert_awaited_once()
 
     async def test_responses_service_inherits_quick_image_wait_non_stream(self):
         token_mgr = DummyChatTokenManager()
