@@ -25,6 +25,13 @@ from app.core.exceptions import (
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.upload import UploadService
 from app.services.grok.utils import process as proc_base
+from app.services.grok.utils.prompt_debug import (
+    detect_image_keyword_categories as _detect_image_keyword_categories,
+    extract_last_user_text as _extract_last_user_text_for_summary,
+    looks_like_image_prompt as _looks_like_image_prompt_text,
+    summarize_chat_messages,
+    summarize_prompt_text,
+)
 from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
 from app.services.reverse.app_chat import (
     AppChatRequestMetadata,
@@ -273,6 +280,16 @@ class MessageExtractor:
             if tool_prompt:
                 combined = f"{tool_prompt}\n\n{combined}"
 
+        logger.debug(
+            "MessageExtractor extracted prompt summary",
+            extra={
+                "prompt_summary": summarize_prompt_text(combined),
+                "source_prompt_summary": summarize_chat_messages(messages),
+                "file_attachment_count": len(file_attachments),
+                "image_attachment_count": len(image_attachments),
+            },
+        )
+
         return combined, file_attachments, image_attachments
 
 
@@ -399,12 +416,39 @@ class GrokChatService:
         message, file_attachments, image_attachments = MessageExtractor.extract(
             messages, tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls
         )
+        source_prompt_summary = summarize_chat_messages(messages)
+        upstream_prompt_summary = summarize_prompt_text(message)
+        image_keyword_categories = _detect_image_keyword_categories(
+            _extract_last_user_text(messages)
+        )
         logger.debug(
             "Extracted message length=%s, files=%s, images=%s",
             len(message),
             len(file_attachments),
             len(image_attachments),
         )
+        logger.debug(
+            "Chat upstream prompt summary",
+            extra={
+                "model": model,
+                "source_prompt_summary": source_prompt_summary,
+                "upstream_prompt_summary": upstream_prompt_summary,
+                "image_keyword_categories": image_keyword_categories,
+            },
+        )
+        if (
+            source_prompt_summary.get("non_ascii_count", 0) > 0
+            and upstream_prompt_summary.get("non_ascii_count", 0) == 0
+        ):
+            logger.warning(
+                "Quick image non_ascii_lost_before_upstream",
+                extra={
+                    "model": model,
+                    "source_prompt_summary": source_prompt_summary,
+                    "upstream_prompt_summary": upstream_prompt_summary,
+                    "image_keyword_categories": image_keyword_categories,
+                },
+            )
 
         # 上传附件
         file_ids: List[str] = []
@@ -480,38 +524,12 @@ class AutoImageStreamProbe:
 
 
 def _extract_last_user_text(messages: List[Dict[str, Any]]) -> str:
-    for msg in reversed(messages or []):
-        if (msg.get("role") or "user") != "user":
-            continue
-        content = msg.get("content")
-        texts: list[str] = []
-        if isinstance(content, str):
-            text = content.strip()
-            if text:
-                texts.append(text)
-        elif isinstance(content, dict):
-            content = [content]
-        if isinstance(content, list):
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") != "text":
-                    continue
-                text = str(item.get("text") or "").strip()
-                if text:
-                    texts.append(text)
-        combined = "\n".join(texts).strip()
-        if combined:
-            return combined
-    return ""
+    return _extract_last_user_text_for_summary(messages)
 
 
 def _looks_like_auto_image_prompt(messages: List[Dict[str, Any]]) -> bool:
     text = _extract_last_user_text(messages)
-    if not text:
-        return False
-    compact = re.sub(r"\s+", " ", text).strip()
-    return any(pattern.search(compact) for pattern in _AUTO_IMAGE_INTENT_PATTERNS)
+    return _looks_like_image_prompt_text(text)
 
 
 def _chat_result_has_rendered_image(result: Dict[str, Any]) -> bool:
@@ -538,6 +556,42 @@ def _is_quick_mode_image_intent(
     model: str, messages: List[Dict[str, Any]]
 ) -> bool:
     return model in _QUICK_IMAGE_MODELS and _looks_like_auto_image_prompt(messages)
+
+
+def _extract_chat_result_content(result: Dict[str, Any]) -> str:
+    choices = result.get("choices") or []
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def _log_quick_mode_result_anomaly(
+    *,
+    model: str,
+    result: Dict[str, Any],
+    metadata: AppChatRequestMetadata,
+    prompt_summary: Dict[str, Any],
+    image_keyword_categories: List[str],
+) -> None:
+    content = _extract_chat_result_content(result)
+    event_name = (
+        "Quick image empty_content_stop"
+        if not content.strip()
+        else "Quick image text_answer_without_image_events"
+    )
+    logger.warning(
+        event_name,
+        extra={
+            "model": model,
+            "conversation_id": metadata.conversation_id or "",
+            "response_id": metadata.response_id or "",
+            "prompt_summary": prompt_summary,
+            "image_keyword_categories": image_keyword_categories,
+            "content_summary": summarize_prompt_text(content),
+        },
+    )
 
 
 def _is_final_image_url(url: str) -> bool:
@@ -903,6 +957,17 @@ async def _augment_quick_image_response_stream(
         )
         return
 
+    if not saw_streaming_image_event and not preview_urls:
+        logger.warning(
+            "Quick image text_answer_without_image_events",
+            extra={
+                "model": model,
+                "conversation_id": metadata.conversation_id or "",
+                "response_id": metadata.response_id or "",
+                "candidate_count": 0,
+            },
+        )
+
     if not metadata.conversation_id and not preview_urls:
         logger.warning(
             "Quick image wait missing conversation id; degrading to text",
@@ -1112,7 +1177,21 @@ class ChatService:
         else:
             show_think = reasoning_effort != "none"
         is_stream = stream if stream is not None else get_config("app.stream")
+        last_user_text = _extract_last_user_text(messages)
+        prompt_summary = summarize_prompt_text(last_user_text)
+        image_keyword_categories = _detect_image_keyword_categories(last_user_text)
         quick_mode_image_intent = _is_quick_mode_image_intent(model, messages)
+        if model in _QUICK_IMAGE_MODELS or prompt_summary.get("has_image_keywords"):
+            logger.info(
+                "Quick image intent evaluated",
+                extra={
+                    "model": model,
+                    "quick_image_intent": quick_mode_image_intent,
+                    "prompt_summary": prompt_summary,
+                    "image_keyword_categories": image_keyword_categories,
+                    "stream": bool(is_stream),
+                },
+            )
         quota_requirement = (
             image_quota_requirement() if quick_mode_image_intent else None
         )
@@ -1209,6 +1288,14 @@ class ChatService:
                     tools=tools,
                     tool_choice=tool_choice,
                 ).process(raw_response)
+                if quick_mode_image_intent and not _chat_result_has_rendered_image(result):
+                    _log_quick_mode_result_anomaly(
+                        model=model,
+                        result=result,
+                        metadata=response.metadata,
+                        prompt_summary=prompt_summary,
+                        image_keyword_categories=image_keyword_categories,
+                    )
                 await _consume_chat_usage(token_mgr, token, model)
                 return result
 

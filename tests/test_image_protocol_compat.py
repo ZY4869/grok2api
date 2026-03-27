@@ -9,6 +9,7 @@ from app.services.grok.services.model import ModelService
 from app.services.grok.utils.process import _collect_image_references
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
+    APP_CHAT_REQUEST_MODE_ID,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     AppChatRequestMetadata,
     AppChatReverse,
@@ -96,6 +97,61 @@ class AppChatProtocolPayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["modeId"], "auto")
         self.assertTrue(payload["enable420"])
+
+    def test_build_payload_mode_id_includes_har_defaults(self):
+        with patch(
+            "app.services.reverse.app_chat.get_config",
+            side_effect=lambda key, default=None: {
+                "app.custom_instruction": "",
+                "app.disable_memory": False,
+                "app.temporary": False,
+                "app.auto_enable_420": True,
+            }.get(key, default),
+        ):
+            payload = AppChatReverse.build_payload(
+                message="draw a cat",
+                model="grok-auto",
+                mode="auto",
+                request_strategy=APP_CHAT_REQUEST_MODE_ID,
+            )
+
+        self.assertEqual(payload["collectionIds"], [])
+        self.assertEqual(payload["connectors"], [])
+        self.assertFalse(payload["searchAllConnectors"])
+        self.assertEqual(
+            payload["toolOverrides"],
+            {
+                "gmailSearch": False,
+                "googleCalendarSearch": False,
+                "outlookSearch": False,
+                "outlookCalendarSearch": False,
+                "googleDriveSearch": False,
+            },
+        )
+
+    def test_build_payload_merges_default_and_custom_tool_overrides(self):
+        with patch(
+            "app.services.reverse.app_chat.get_config",
+            side_effect=lambda key, default=None: {
+                "app.custom_instruction": "",
+                "app.disable_memory": False,
+                "app.temporary": False,
+                "app.auto_enable_420": True,
+            }.get(key, default),
+        ):
+            payload = AppChatReverse.build_payload(
+                message="draw a cat",
+                model="grok-auto",
+                mode="auto",
+                request_strategy=APP_CHAT_REQUEST_MODE_ID,
+                request_overrides={"toolOverrides": {"gmailSearch": True}},
+                tool_overrides={"googleDriveSearch": True},
+            )
+
+        self.assertTrue(payload["toolOverrides"]["gmailSearch"])
+        self.assertTrue(payload["toolOverrides"]["googleDriveSearch"])
+        self.assertFalse(payload["toolOverrides"]["outlookSearch"])
+        self.assertFalse(payload["toolOverrides"]["outlookCalendarSearch"])
 
 
 class GrokChatProtocolForwardingTests(unittest.IsolatedAsyncioTestCase):

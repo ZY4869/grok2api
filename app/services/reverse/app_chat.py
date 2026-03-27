@@ -15,6 +15,7 @@ from curl_cffi.requests import AsyncSession
 from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.core.logger import logger
+from app.services.grok.utils.prompt_debug import summarize_prompt_text
 from app.core.proxy_pool import (
     get_current_proxy_from,
     rotate_proxy,
@@ -38,6 +39,13 @@ _RESPONSE_ID_PATTERNS = (
     re.compile(r"responseId[\"'=:\s]+([0-9a-fA-F-]{8,64})"),
     re.compile(r"\brid=([0-9a-fA-F-]{8,64})"),
 )
+_DEFAULT_TOOL_OVERRIDES = {
+    "gmailSearch": False,
+    "googleCalendarSearch": False,
+    "outlookSearch": False,
+    "outlookCalendarSearch": False,
+    "googleDriveSearch": False,
+}
 
 
 @dataclass
@@ -242,10 +250,13 @@ class AppChatReverse:
             "returnRawGrokInXaiRequest": False,
             "sendFinalMetadata": True,
             "temporary": get_config("app.temporary"),
-            "toolOverrides": {},
+            "toolOverrides": deepcopy(_DEFAULT_TOOL_OVERRIDES),
         }
 
         if strategy == APP_CHAT_REQUEST_MODE_ID:
+            payload["collectionIds"] = []
+            payload["connectors"] = []
+            payload["searchAllConnectors"] = False
             payload["modeId"] = mode
             payload["enable420"] = bool(get_config("app.auto_enable_420", True))
             payload["responseMetadata"] = {}
@@ -265,7 +276,16 @@ class AppChatReverse:
             payload["customPersonality"] = custom_personality
 
         payload = _merge_request_overrides(payload, request_overrides)
-        payload["toolOverrides"] = tool_overrides or {}
+        merged_tool_overrides = _merge_request_overrides(
+            deepcopy(_DEFAULT_TOOL_OVERRIDES),
+            payload.get("toolOverrides") if isinstance(payload.get("toolOverrides"), dict) else {},
+        )
+        if tool_overrides:
+            merged_tool_overrides = _merge_request_overrides(
+                merged_tool_overrides,
+                tool_overrides,
+            )
+        payload["toolOverrides"] = merged_tool_overrides
 
         if model_config_override:
             payload.setdefault("responseMetadata", {})
@@ -328,7 +348,12 @@ class AppChatReverse:
                 "image_generation_count": payload.get("imageGenerationCount"),
                 "enable_nsfw": payload.get("enableNsfw"),
                 "message_len": len(payload.get("message") or ""),
+                "message_summary": summarize_prompt_text(payload.get("message") or ""),
                 "file_attachments": len(payload.get("fileAttachments") or []),
+                "tool_override_keys": sorted((payload.get("toolOverrides") or {}).keys()),
+                "collection_ids_count": len(payload.get("collectionIds") or []),
+                "connector_count": len(payload.get("connectors") or []),
+                "search_all_connectors": bool(payload.get("searchAllConnectors")),
                 "custom_personality_len": len(payload.get("customPersonality") or ""),
             }
             logger.debug(

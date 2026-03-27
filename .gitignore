@@ -59,6 +59,7 @@ config.local.toml
 .claude/
 
 # Local HAR captures
+生图.har
 生图上限.har
 生图请求.har
 请求上限.har

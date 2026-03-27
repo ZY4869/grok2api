@@ -32,6 +32,8 @@ from app.core.call_log import (
     begin_call_log,
     log_call_failure,
 )
+from app.core.logger import logger
+from app.services.grok.utils.prompt_debug import summarize_chat_messages
 
 
 class MessageItem(BaseModel):
@@ -719,13 +721,21 @@ router = APIRouter(tags=["Chat"])
 @router.post("/chat/completions")
 async def chat_completions(request: Request, body: ChatCompletionRequest):
     """Chat Completions API - 兼容 OpenAI"""
-    from app.core.logger import logger
 
     # 参数验证
     begin_call_log(
         "chat.completions",
         trace_id=getattr(request.state, "trace_id", ""),
         model=body.model,
+    )
+    logger.info(
+        "Chat request prompt summary",
+        extra={
+            "trace_id": getattr(request.state, "trace_id", ""),
+            "model": body.model,
+            "stream": bool(body.stream),
+            "prompt_summary": summarize_chat_messages(body.messages),
+        },
     )
     validate_request(body)
 

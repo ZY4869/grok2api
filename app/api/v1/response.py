@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 
 from app.core.call_log import begin_call_log, wrap_call_log_stream
 from app.core.exceptions import ValidationException
-from app.services.grok.services.responses import ResponsesService
+from app.core.logger import logger
+from app.services.grok.services.responses import (
+    ResponsesService,
+    _coerce_input_to_messages,
+)
+from app.services.grok.utils.prompt_debug import summarize_chat_messages
 
 
 router = APIRouter(tags=["Responses"])
@@ -44,6 +49,18 @@ async def create_response(body: ResponseCreateRequest, request: Request):
         "responses.create",
         trace_id=getattr(request.state, "trace_id", ""),
         model=body.model,
+    )
+    messages = _coerce_input_to_messages(body.input)
+    if body.instructions:
+        messages = [{"role": "system", "content": body.instructions}] + messages
+    logger.info(
+        "Responses request prompt summary",
+        extra={
+            "trace_id": getattr(request.state, "trace_id", ""),
+            "model": body.model,
+            "stream": bool(body.stream),
+            "prompt_summary": summarize_chat_messages(messages),
+        },
     )
 
     if not body.model:
