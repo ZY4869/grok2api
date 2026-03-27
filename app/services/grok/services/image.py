@@ -4,7 +4,6 @@ Grok image services.
 
 import asyncio
 import base64
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +21,7 @@ from app.services.grok.services.image_edit import (
     ImageStreamProcessor as AppChatImageStreamProcessor,
 )
 from app.services.grok.utils.process import BaseProcessor
-from app.services.grok.utils.retry import pick_token, rate_limited
+from app.services.grok.utils.retry import rate_limited
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
@@ -40,10 +39,8 @@ from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
 )
-from app.services.reverse.ws_imagine import ImagineWebSocketReverse
 
 
-image_service = ImagineWebSocketReverse()
 APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     APP_CHAT_REQUEST_LEGACY_MODEL,
@@ -494,27 +491,24 @@ class ImageGenerationService:
                     )
 
             logger.warning(
-                "App-chat image stream exhausted, falling back to ws",
+                "App-chat image stream strategies exhausted",
                 extra={
-                    "image_protocol_strategy": "ws_fallback",
-                    "fallback_stage": "ws_fallback",
+                    "image_protocol_strategy": "app_chat_exhausted",
+                    "fallback_stage": "app_chat_exhausted",
                     "model_id": model_info.model_id,
                     "error": str(last_error) if last_error else "",
                 },
             )
-            ws_result = await self._stream_ws(
-                token=token,
-                model_info=model_info,
-                prompt=prompt,
-                n=n,
-                response_format=response_format,
-                size=size,
-                aspect_ratio=aspect_ratio,
-                enable_nsfw=enable_nsfw,
-                chat_format=chat_format,
+            if last_error:
+                raise last_error
+            raise UpstreamException(
+                "App-chat image stream exhausted without final image",
+                details={
+                    "error_code": "blocked_no_final_image",
+                    "final_images": 0,
+                    "requested": n,
+                },
             )
-            async for chunk in ws_result.data:
-                yield chunk
 
         return ImageGenerationResult(stream=True, data=_combined())
 
@@ -562,41 +556,6 @@ class ImageGenerationService:
                 chat_format=chat_format,
             ),
         )
-
-    async def _stream_ws(
-        self,
-        *,
-        token: str,
-        model_info: Any,
-        prompt: str,
-        n: int,
-        response_format: str,
-        size: str,
-        aspect_ratio: str,
-        enable_nsfw: Optional[bool] = None,
-        chat_format: bool = False,
-    ) -> ImageGenerationResult:
-        if enable_nsfw is None:
-            enable_nsfw = bool(get_config("image.nsfw"))
-        stream_retries = int(get_config("image.blocked_parallel_attempts") or 5) + 1
-        stream_retries = max(1, min(stream_retries, 10))
-        upstream = image_service.stream(
-            token=token,
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            n=n,
-            enable_nsfw=enable_nsfw,
-            max_retries=stream_retries,
-        )
-        processor = ImageWSStreamProcessor(
-            model_info.model_id,
-            token,
-            n=n,
-            response_format=response_format,
-            size=size,
-            chat_format=chat_format,
-        )
-        return ImageGenerationResult(stream=True, data=processor.process(upstream))
 
     async def _collect_with_fallback(
         self,
@@ -676,25 +635,23 @@ class ImageGenerationService:
                 )
 
         logger.warning(
-            "App-chat image collect exhausted, falling back to ws",
+            "App-chat image collect strategies exhausted",
             extra={
-                "image_protocol_strategy": "ws_fallback",
-                "fallback_stage": "ws_fallback",
+                "image_protocol_strategy": "app_chat_exhausted",
+                "fallback_stage": "app_chat_exhausted",
                 "model_id": model_info.model_id,
                 "error": str(last_error) if last_error else "",
             },
         )
-
-        return await self._collect_ws(
-            token_mgr=token_mgr,
-            token=token,
-            model_info=model_info,
-            tried_tokens=tried_tokens,
-            prompt=prompt,
-            n=n,
-            response_format=response_format,
-            aspect_ratio=aspect_ratio,
-            enable_nsfw=enable_nsfw,
+        if last_error:
+            raise last_error
+        raise UpstreamException(
+            "App-chat image collect exhausted without final image",
+            details={
+                "error_code": "blocked_no_final_image",
+                "final_images": 0,
+                "requested": n,
+            },
         )
 
     async def _collect_app_chat(
@@ -772,152 +729,6 @@ class ImageGenerationService:
                 f"event: {event}\n"
                 f"data: {orjson.dumps(normalized).decode()}\n\n"
             )
-
-    async def _collect_ws(
-        self,
-        *,
-        token_mgr: Any,
-        token: str,
-        model_info: Any,
-        tried_tokens: set[str],
-        prompt: str,
-        n: int,
-        response_format: str,
-        aspect_ratio: str,
-        enable_nsfw: Optional[bool] = None,
-    ) -> ImageGenerationResult:
-        if enable_nsfw is None:
-            enable_nsfw = bool(get_config("image.nsfw"))
-        all_images: List[str] = []
-        seen = set()
-        expected_per_call = 6
-        calls_needed = max(1, int(math.ceil(n / expected_per_call)))
-        calls_needed = min(calls_needed, n)
-
-        async def _fetch_batch(call_target: int, call_token: str):
-            stream_retries = int(get_config("image.blocked_parallel_attempts") or 5) + 1
-            stream_retries = max(1, min(stream_retries, 10))
-            upstream = image_service.stream(
-                token=call_token,
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-                n=call_target,
-                enable_nsfw=enable_nsfw,
-                max_retries=stream_retries,
-            )
-            processor = ImageWSCollectProcessor(
-                model_info.model_id,
-                token,
-                n=call_target,
-                response_format=response_format,
-            )
-            return await processor.process(upstream)
-
-        tasks = []
-        for i in range(calls_needed):
-            remaining = n - (i * expected_per_call)
-            call_target = min(expected_per_call, remaining)
-            tasks.append(_fetch_batch(call_target, token))
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for batch in results:
-            if isinstance(batch, Exception):
-                logger.warning(f"WS batch failed: {batch}")
-                continue
-            for img in batch:
-                if img not in seen:
-                    seen.add(img)
-                    all_images.append(img)
-                if len(all_images) >= n:
-                    break
-            if len(all_images) >= n:
-                break
-
-        # If upstream likely blocked/reviewed some images, run extra parallel attempts
-        # and only keep valid finals selected by ws_imagine classification.
-        if len(all_images) < n:
-            remaining = n - len(all_images)
-            extra_attempts = int(get_config("image.blocked_parallel_attempts") or 5)
-            extra_attempts = max(0, min(extra_attempts, 10))
-            parallel_enabled = bool(get_config("image.blocked_parallel_enabled", True))
-            if extra_attempts > 0:
-                logger.warning(
-                    f"Image finals insufficient ({len(all_images)}/{n}), running "
-                    f"{extra_attempts} recovery attempts for remaining={remaining}, "
-                    f"parallel_enabled={parallel_enabled}"
-                )
-                extra_tasks = []
-                if parallel_enabled:
-                    recovery_tried = set(tried_tokens)
-                    recovery_tokens: List[str] = []
-                    for _ in range(extra_attempts):
-                        recovery_token = await pick_token(
-                            token_mgr,
-                            model_info.model_id,
-                            recovery_tried,
-                        )
-                        if not recovery_token:
-                            break
-                        recovery_tried.add(recovery_token)
-                        recovery_tokens.append(recovery_token)
-
-                    if recovery_tokens:
-                        logger.info(
-                            f"Recovery using {len(recovery_tokens)} distinct tokens"
-                        )
-                    for recovery_token in recovery_tokens:
-                        extra_tasks.append(
-                            _fetch_batch(min(expected_per_call, remaining), recovery_token)
-                        )
-                else:
-                    extra_tasks = [
-                        _fetch_batch(min(expected_per_call, remaining), token)
-                        for _ in range(extra_attempts)
-                    ]
-
-                if not extra_tasks:
-                    logger.warning("No tokens available for recovery attempts")
-                    extra_results = []
-                else:
-                    extra_results = await asyncio.gather(*extra_tasks, return_exceptions=True)
-                for batch in extra_results:
-                    if isinstance(batch, Exception):
-                        logger.warning(f"WS recovery batch failed: {batch}")
-                        continue
-                    for img in batch:
-                        if img not in seen:
-                            seen.add(img)
-                            all_images.append(img)
-                        if len(all_images) >= n:
-                            break
-                    if len(all_images) >= n:
-                        break
-                logger.info(
-                    f"Image recovery attempts completed: finals={len(all_images)}/{n}, "
-                    f"attempts={extra_attempts}"
-                )
-
-        if len(all_images) < n:
-            logger.error(
-                f"Image generation failed after recovery attempts: finals={len(all_images)}/{n}, "
-                f"blocked_parallel_attempts={int(get_config('image.blocked_parallel_attempts') or 5)}"
-            )
-            raise UpstreamException(
-                "Image generation blocked or no valid final image",
-                details={
-                    "error_code": "blocked_no_final_image",
-                    "final_images": len(all_images),
-                    "requested": n,
-                },
-            )
-
-        return await self._finalize_collect_result(
-            token_mgr=token_mgr,
-            token=token,
-            model_info=model_info,
-            images=all_images,
-            n=n,
-        )
 
     async def _finalize_collect_result(
         self,

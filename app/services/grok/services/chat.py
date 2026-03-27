@@ -6,7 +6,7 @@ import asyncio
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Any, AsyncGenerator, AsyncIterable, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -71,6 +71,11 @@ _QUICK_IMAGE_MODELS = frozenset({"grok-auto", "grok-3-fast", "grok-4-expert"})
 _QUICK_IMAGE_POLL_INTERVAL_SEC = 1.0
 _QUICK_IMAGE_PREVIEW_URL_RE = re.compile(r"/generated/[^/]+-part-\d+/")
 _QUICK_IMAGE_PREVIEW_SEGMENT_RE = re.compile(r"-part-\d+(?=/)")
+_QUICK_IMAGE_TOOL_SIGNAL_KEYS = frozenset(
+    {"toolCall", "toolCalls", "tool_calls", "toolResult", "toolResults"}
+)
+_QUICK_IMAGE_STATE_WAIT_SHORT_TEXT_LIMIT = 24
+_QUICK_IMAGE_STATE_WAIT_MAX_SEC = 3.0
 
 
 def extract_tool_text(raw: str, rollout_id: str = "") -> str:
@@ -523,6 +528,82 @@ class AutoImageStreamProbe:
     has_streaming_image_event: bool
 
 
+@dataclass
+class QuickImagePreparedLine:
+    raw_line: Any
+    has_final_image: bool = False
+    has_streaming_image_event: bool = False
+    preview_urls: List[str] = field(default_factory=list)
+    token_text: str = ""
+    message_text: str = ""
+    saw_model_response_message: bool = False
+    has_tool_signal: bool = False
+    response_id: str = ""
+
+
+@dataclass
+class QuickImagePendingState:
+    prompt_intent: bool
+    conversation_id: str = ""
+    response_id: str = ""
+    preview_urls: List[str] = field(default_factory=list)
+    saw_final_image: bool = False
+    saw_streaming_image_event: bool = False
+    saw_model_response_message: bool = False
+    token_text: str = ""
+    message_text: str = ""
+    saw_tool_call_result: bool = False
+
+    def note_metadata(self, metadata: AppChatRequestMetadata) -> None:
+        if not self.conversation_id:
+            self.conversation_id = metadata.conversation_id or ""
+        if not self.response_id:
+            self.response_id = metadata.response_id or ""
+
+    def note_prepared_line(self, prepared: QuickImagePreparedLine) -> None:
+        self.saw_final_image = self.saw_final_image or prepared.has_final_image
+        self.saw_streaming_image_event = (
+            self.saw_streaming_image_event or prepared.has_streaming_image_event
+        )
+        self.saw_model_response_message = (
+            self.saw_model_response_message or prepared.saw_model_response_message
+        )
+        self.saw_tool_call_result = (
+            self.saw_tool_call_result or prepared.has_tool_signal
+        )
+        if prepared.token_text:
+            self.token_text += prepared.token_text
+        if prepared.saw_model_response_message:
+            self.message_text = prepared.message_text
+        if prepared.response_id and not self.response_id:
+            self.response_id = prepared.response_id
+        for preview_url in prepared.preview_urls:
+            if preview_url not in self.preview_urls:
+                self.preview_urls.append(preview_url)
+
+    @property
+    def candidate_urls(self) -> List[str]:
+        return _derive_quick_image_candidate_urls(self.preview_urls)
+
+    @property
+    def effective_text(self) -> str:
+        if self.message_text.strip():
+            return self.message_text
+        if self.token_text.strip():
+            return self.token_text
+        return self.message_text or self.token_text
+
+    @property
+    def stripped_text_length(self) -> int:
+        return len(re.sub(r"\s+", "", self.effective_text or ""))
+
+    @property
+    def has_short_or_empty_text(self) -> bool:
+        return (
+            self.stripped_text_length <= _QUICK_IMAGE_STATE_WAIT_SHORT_TEXT_LIMIT
+        )
+
+
 def _extract_last_user_text(messages: List[Dict[str, Any]]) -> str:
     return _extract_last_user_text_for_summary(messages)
 
@@ -606,6 +687,81 @@ def _quick_image_now() -> float:
 
 
 _REMOVE_PREVIEW_URL = object()
+
+
+def _quick_image_response_id(resp: Dict[str, Any]) -> str:
+    if not isinstance(resp, dict):
+        return ""
+    raw_response_id = resp.get("responseId")
+    if isinstance(raw_response_id, str) and raw_response_id.strip():
+        return raw_response_id.strip()
+    model_response = resp.get("modelResponse") or {}
+    if not isinstance(model_response, dict):
+        return ""
+    model_response_id = model_response.get("responseId")
+    if isinstance(model_response_id, str):
+        return model_response_id.strip()
+    return ""
+
+
+def _has_quick_image_tool_signal(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _QUICK_IMAGE_TOOL_SIGNAL_KEYS:
+                return True
+            if _has_quick_image_tool_signal(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_quick_image_tool_signal(item) for item in value)
+    if isinstance(value, str):
+        return "<tool_call>" in value or "</tool_call>" in value
+    return False
+
+
+def _quick_image_state_wait_timeout() -> float:
+    final_timeout = float(get_config("image.final_timeout") or 15)
+    return max(0.1, min(_QUICK_IMAGE_STATE_WAIT_MAX_SEC, final_timeout))
+
+
+def _should_arm_quick_image_state_wait(state: QuickImagePendingState) -> bool:
+    return bool(
+        state.conversation_id
+        and not state.prompt_intent
+        and not state.saw_final_image
+        and not state.saw_tool_call_result
+        and state.has_short_or_empty_text
+    )
+
+
+def _should_skip_quick_image_state_wait(state: QuickImagePendingState) -> bool:
+    return bool(
+        state.conversation_id
+        and not state.prompt_intent
+        and not state.saw_final_image
+        and not state.saw_tool_call_result
+        and not state.has_short_or_empty_text
+    )
+
+
+def _quick_image_log_extra(
+    model: str,
+    state: QuickImagePendingState,
+    **extra: Any,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "model": model,
+        "conversation_id": state.conversation_id or "",
+        "response_id": state.response_id or "",
+        "candidate_count": len(state.candidate_urls),
+        "assistant_text_length": state.stripped_text_length,
+        "has_streaming_image_event": state.saw_streaming_image_event,
+        "has_preview_url": bool(state.preview_urls),
+        "has_model_response_message": state.saw_model_response_message,
+        "has_tool_call_result": state.saw_tool_call_result,
+    }
+    payload.update(extra)
+    return payload
 
 
 def _strip_preview_image_urls(value: Any) -> Any:
@@ -736,19 +892,31 @@ def _derive_quick_image_candidate_urls(preview_urls: List[str]) -> List[str]:
     return candidates
 
 
-def _prepare_quick_image_raw_line(raw_line: Any) -> tuple[Any, bool, bool, List[str]]:
+def _prepare_quick_image_raw_line(raw_line: Any) -> QuickImagePreparedLine:
     line = proc_base._normalize_line(raw_line)
     if not line:
-        return raw_line, False, False, []
+        return QuickImagePreparedLine(raw_line=raw_line)
 
     try:
         payload = orjson.loads(line)
     except orjson.JSONDecodeError:
-        return raw_line, False, False, []
+        return QuickImagePreparedLine(raw_line=raw_line)
 
     resp = payload.get("result", {}).get("response", {})
     preview_urls = _collect_preview_image_urls(resp)
     has_streaming_image_event = bool(resp.get("streamingImageGenerationResponse"))
+    token_text = resp.get("token") if isinstance(resp.get("token"), str) else ""
+    model_response = resp.get("modelResponse") or {}
+    if not isinstance(model_response, dict):
+        model_response = {}
+    saw_model_response_message = "message" in model_response
+    message_text = (
+        model_response.get("message")
+        if isinstance(model_response.get("message"), str)
+        else ""
+    )
+    has_tool_signal = _has_quick_image_tool_signal(resp)
+    response_id = _quick_image_response_id(resp)
     stripped_resp = _strip_preview_image_urls(resp)
     if stripped_resp is _REMOVE_PREVIEW_URL:
         stripped_resp = {}
@@ -758,7 +926,17 @@ def _prepare_quick_image_raw_line(raw_line: Any) -> tuple[Any, bool, bool, List[
         resp = stripped_resp
 
     final_urls = _collect_final_image_urls(resp)
-    return raw_line, bool(final_urls), has_streaming_image_event, preview_urls
+    return QuickImagePreparedLine(
+        raw_line=raw_line,
+        has_final_image=bool(final_urls),
+        has_streaming_image_event=has_streaming_image_event,
+        preview_urls=preview_urls,
+        token_text=token_text,
+        message_text=message_text,
+        saw_model_response_message=saw_model_response_message,
+        has_tool_signal=has_tool_signal,
+        response_id=response_id,
+    )
 
 
 def _build_quick_image_completion_line(
@@ -785,9 +963,14 @@ async def _poll_quick_image_final_urls(
     model: str,
     preview_urls: List[str] | None = None,
     response_id: str = "",
+    timeout: float | None = None,
 ) -> List[str]:
-    timeout = float(get_config("image.final_timeout") or 15)
-    deadline = _quick_image_now() + max(1.0, timeout)
+    wait_timeout = (
+        float(timeout)
+        if timeout is not None
+        else float(get_config("image.final_timeout") or 15)
+    )
+    deadline = _quick_image_now() + max(0.1, wait_timeout)
     browser = get_config("proxy.browser")
     known_preview_urls = list(preview_urls or [])
     saw_candidates = False
@@ -905,140 +1088,158 @@ async def _augment_quick_image_response_stream(
     *,
     token: str,
     model: str,
+    prompt_intent: bool,
 ) -> AsyncGenerator[str, None]:
     metadata = getattr(request_result, "metadata", AppChatRequestMetadata())
-    saw_final_image = False
-    saw_streaming_image_event = False
-    preview_urls: List[str] = []
+    state = QuickImagePendingState(prompt_intent=prompt_intent)
+    state.note_metadata(metadata)
 
     logger.info(
         "Quick image wait started",
-        extra={
-            "model": model,
-            "conversation_id": metadata.conversation_id or "",
-        },
+        extra=_quick_image_log_extra(model, state),
     )
 
     async for raw_line in request_result:
-        prepared_line, has_final_image, has_streaming_image_event, line_preview_urls = (
-            _prepare_quick_image_raw_line(raw_line)
-        )
+        prepared_line = _prepare_quick_image_raw_line(raw_line)
         new_preview_urls = [
             preview_url
-            for preview_url in line_preview_urls
-            if preview_url not in preview_urls
+            for preview_url in prepared_line.preview_urls
+            if preview_url not in state.preview_urls
         ]
+        state.note_prepared_line(prepared_line)
         if new_preview_urls:
-            preview_urls.extend(new_preview_urls)
             logger.info(
                 "Quick image preview detected",
-                extra={
-                    "model": model,
-                    "conversation_id": metadata.conversation_id or "",
-                    "response_id": metadata.response_id or "",
-                    "candidate_count": len(
-                        _derive_quick_image_candidate_urls(preview_urls)
-                    ),
-                },
+                extra=_quick_image_log_extra(model, state),
             )
-        saw_final_image = saw_final_image or has_final_image
-        saw_streaming_image_event = (
-            saw_streaming_image_event or has_streaming_image_event
-        )
-        yield prepared_line
+        yield prepared_line.raw_line
 
-    if saw_final_image:
+    if state.saw_final_image:
         logger.info(
             "Quick image completed in primary stream",
-            extra={
-                "model": model,
-                "conversation_id": metadata.conversation_id or "",
-            },
+            extra=_quick_image_log_extra(model, state),
         )
         return
 
-    if not saw_streaming_image_event and not preview_urls:
+    if state.prompt_intent and not state.saw_streaming_image_event and not state.preview_urls:
         logger.warning(
             "Quick image text_answer_without_image_events",
-            extra={
-                "model": model,
-                "conversation_id": metadata.conversation_id or "",
-                "response_id": metadata.response_id or "",
-                "candidate_count": 0,
-            },
+            extra=_quick_image_log_extra(model, state),
         )
 
-    if not metadata.conversation_id and not preview_urls:
-        logger.warning(
-            "Quick image wait missing conversation id; degrading to text",
-            extra={
-                "model": model,
-                "response_id": metadata.response_id or "",
-                "has_streaming_image_event": saw_streaming_image_event,
-                "candidate_count": 0,
-            },
+    wait_timeout: float | None = None
+    wait_mode = ""
+
+    if state.prompt_intent:
+        if not state.conversation_id and not state.preview_urls:
+            logger.warning(
+                "Quick image wait missing conversation id; degrading to text",
+                extra=_quick_image_log_extra(model, state),
+            )
+            return
+        wait_mode = "prompt"
+        wait_timeout = float(get_config("image.final_timeout") or 15)
+        logger.info(
+            "Quick image wait_armed_by_prompt",
+            extra=_quick_image_log_extra(
+                model,
+                state,
+                wait_budget_sec=wait_timeout,
+            ),
+        )
+    elif _should_arm_quick_image_state_wait(state):
+        wait_mode = "state"
+        wait_timeout = _quick_image_state_wait_timeout()
+        logger.info(
+            "Quick image wait_armed_by_state",
+            extra=_quick_image_log_extra(
+                model,
+                state,
+                wait_budget_sec=wait_timeout,
+            ),
+        )
+    elif _should_skip_quick_image_state_wait(state):
+        logger.info(
+            "Quick image state_wait_skipped_long_text",
+            extra=_quick_image_log_extra(model, state),
         )
         return
+    else:
+        return
 
-    if metadata.conversation_id:
+    if wait_mode == "prompt" and state.conversation_id:
         logger.info(
             "Quick image entering conversations_v2 wait",
-            extra={
-                "model": model,
-                "conversation_id": metadata.conversation_id,
-                "response_id": metadata.response_id or "",
-                "has_streaming_image_event": saw_streaming_image_event,
-                "candidate_count": len(
-                    _derive_quick_image_candidate_urls(preview_urls)
+            extra=_quick_image_log_extra(model, state),
+        )
+    elif wait_mode == "prompt":
+        logger.info(
+            "Quick image wait missing conversation id; using asset fallback",
+            extra=_quick_image_log_extra(model, state),
+        )
+
+    final_urls = await _poll_quick_image_final_urls(
+        token=token,
+        conversation_id=state.conversation_id,
+        model=model,
+        preview_urls=state.preview_urls,
+        response_id=state.response_id,
+        timeout=wait_timeout,
+    )
+    if not final_urls:
+        if wait_mode == "state":
+            logger.info(
+                "Quick image state_wait_timeout",
+                extra=_quick_image_log_extra(
+                    model,
+                    state,
+                    wait_budget_sec=wait_timeout or 0,
                 ),
-            },
+            )
+        else:
+            logger.warning(
+                "Quick image wait timed out; degrading to text",
+                extra=_quick_image_log_extra(
+                    model,
+                    state,
+                    wait_budget_sec=wait_timeout or 0,
+                ),
+            )
+        return
+
+    if state.effective_text.strip():
+        logger.info(
+            "Quick image recovered_after_text",
+            extra=_quick_image_log_extra(
+                model,
+                state,
+                wait_mode=wait_mode,
+                final_image_count=len(final_urls),
+            ),
         )
     else:
         logger.info(
-            "Quick image wait missing conversation id; using asset fallback",
-            extra={
-                "model": model,
-                "conversation_id": "",
-                "response_id": metadata.response_id or "",
-                "candidate_count": len(
-                    _derive_quick_image_candidate_urls(preview_urls)
-                ),
-            },
+            "Quick image empty_stop_recovered",
+            extra=_quick_image_log_extra(
+                model,
+                state,
+                wait_mode=wait_mode,
+                final_image_count=len(final_urls),
+            ),
         )
-    final_urls = await _poll_quick_image_final_urls(
-        token=token,
-        conversation_id=metadata.conversation_id or "",
-        model=model,
-        preview_urls=preview_urls,
-        response_id=metadata.response_id or "",
-    )
-    if not final_urls:
-        logger.warning(
-            "Quick image wait timed out; degrading to text",
-            extra={
-                "model": model,
-                "conversation_id": metadata.conversation_id or "",
-                "response_id": metadata.response_id or "",
-                "candidate_count": len(
-                    _derive_quick_image_candidate_urls(preview_urls)
-                ),
-            },
-        )
-        return
 
     logger.info(
         "Quick image wait completed",
-        extra={
-            "model": model,
-            "conversation_id": metadata.conversation_id or "",
-            "response_id": metadata.response_id or "",
-            "final_image_count": len(final_urls),
-            "candidate_count": len(_derive_quick_image_candidate_urls(preview_urls)),
-        },
+        extra=_quick_image_log_extra(
+            model,
+            state,
+            wait_mode=wait_mode,
+            final_image_count=len(final_urls),
+        ),
     )
     yield _build_quick_image_completion_line(
         final_urls,
-        response_id=metadata.response_id or "",
+        response_id=state.response_id,
     )
 
 
@@ -1259,11 +1460,12 @@ class ChatService:
                     )
 
                 raw_response: AsyncIterable[Any] = response
-                if quick_mode_image_intent:
+                if model in _QUICK_IMAGE_MODELS:
                     raw_response = _augment_quick_image_response_stream(
                         response,
                         token=token,
                         model=model,
+                        prompt_intent=quick_mode_image_intent,
                     )
 
                 # 处理响应

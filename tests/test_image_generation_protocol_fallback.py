@@ -47,7 +47,7 @@ def _image_progress_chunk() -> str:
 
 
 class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
-    async def test_stream_retries_legacy_strategy_before_ws(self):
+    async def test_stream_retries_legacy_strategy_before_failing(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
         auto_result = ImageGenerationResult(
@@ -66,7 +66,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_stream_app_chat",
             new=AsyncMock(side_effect=[auto_result, legacy_result]),
-        ) as stream_mock, patch.object(service, "_stream_ws", new=AsyncMock()) as ws_mock:
+        ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
                 model_info=model_info,
@@ -91,9 +91,8 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             [call.kwargs["request_strategy"] for call in stream_mock.await_args_list],
             [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
-        ws_mock.assert_not_awaited()
 
-    async def test_collect_retries_legacy_strategy_before_ws(self):
+    async def test_collect_retries_legacy_strategy_before_returning_success(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
 
@@ -106,7 +105,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
                     ["https://cdn.example.com/legacy.png"],
                 ]
             ),
-        ) as collect_mock, patch.object(service, "_collect_ws", new=AsyncMock()) as ws_mock:
+        ) as collect_mock:
             result = await service._collect_with_fallback(
                 token_mgr=object(),
                 token="token",
@@ -124,16 +123,10 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             [call.kwargs["request_strategy"] for call in collect_mock.await_args_list],
             [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
-        ws_mock.assert_not_awaited()
 
-    async def test_collect_uses_ws_only_after_both_app_chat_strategies_fail(self):
+    async def test_collect_raises_after_both_app_chat_strategies_fail(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
-        ws_result = ImageGenerationResult(
-            stream=False,
-            data=["https://cdn.example.com/ws.png"],
-            usage_override={"total_tokens": 0},
-        )
 
         with patch.object(
             service,
@@ -144,29 +137,74 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
                     UpstreamException("legacy failed", details={"status": 502}),
                 ]
             ),
-        ) as collect_mock, patch.object(
-            service,
-            "_collect_ws",
-            new=AsyncMock(return_value=ws_result),
-        ) as ws_mock:
-            result = await service._collect_with_fallback(
-                token_mgr=object(),
-                token="token",
-                model_info=model_info,
-                tried_tokens={"token"},
-                prompt="draw a cat",
-                n=1,
-                response_format="url",
-                aspect_ratio="1:1",
-                enable_nsfw=False,
-            )
+        ) as collect_mock:
+            with self.assertRaises(UpstreamException) as ctx:
+                await service._collect_with_fallback(
+                    token_mgr=object(),
+                    token="token",
+                    model_info=model_info,
+                    tried_tokens={"token"},
+                    prompt="draw a cat",
+                    n=1,
+                    response_format="url",
+                    aspect_ratio="1:1",
+                    enable_nsfw=False,
+                )
 
-        self.assertIs(result, ws_result)
         self.assertEqual(
             [call.kwargs["request_strategy"] for call in collect_mock.await_args_list],
             [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
-        ws_mock.assert_awaited_once()
+        self.assertIn("legacy failed", str(ctx.exception))
+
+    async def test_stream_raises_after_both_app_chat_strategies_fail(self):
+        service = ImageGenerationService()
+        model_info = ModelService.get("grok-imagine-1.0")
+        auto_result = ImageGenerationResult(
+            stream=True,
+            data=_async_stream(
+                [_image_progress_chunk()],
+                UpstreamException("auto failed", details={"status": 502}),
+            ),
+        )
+        legacy_result = ImageGenerationResult(
+            stream=True,
+            data=_async_stream(
+                [_image_progress_chunk()],
+                UpstreamException("legacy failed", details={"status": 502}),
+            ),
+        )
+
+        with patch.object(
+            service,
+            "_stream_app_chat",
+            new=AsyncMock(side_effect=[auto_result, legacy_result]),
+        ) as stream_mock:
+            result = await service._stream_with_fallback(
+                token="token",
+                model_info=model_info,
+                prompt="draw a cat",
+                n=1,
+                response_format="url",
+                size="1024x1024",
+                aspect_ratio="1:1",
+                enable_nsfw=False,
+                chat_format=False,
+            )
+            chunks = []
+            with self.assertRaises(UpstreamException) as ctx:
+                async for chunk in result.data:
+                    chunks.append(chunk)
+
+        self.assertEqual(
+            chunks,
+            [_image_progress_chunk(), _image_progress_chunk()],
+        )
+        self.assertEqual(
+            [call.kwargs["request_strategy"] for call in stream_mock.await_args_list],
+            [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
+        )
+        self.assertIn("legacy failed", str(ctx.exception))
 
 
 if __name__ == "__main__":

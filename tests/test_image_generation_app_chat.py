@@ -73,7 +73,13 @@ class AppChatReversePayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["imageGenerationCount"], 4)
         self.assertTrue(payload["enableNsfw"])
-        self.assertEqual(payload["toolOverrides"], {"imageGen": True})
+        self.assertTrue(payload["toolOverrides"]["imageGen"])
+        self.assertFalse(payload["toolOverrides"]["gmailSearch"])
+        self.assertFalse(payload["toolOverrides"]["googleCalendarSearch"])
+        self.assertFalse(payload["toolOverrides"]["googleDriveSearch"])
+        self.assertFalse(payload["toolOverrides"]["outlookSearch"])
+        self.assertFalse(payload["toolOverrides"]["outlookCalendarSearch"])
+        self.assertTrue(payload["toolOverrides"]["ignored"])
         self.assertTrue(payload["responseMetadata"]["customFlag"])
         self.assertEqual(
             payload["responseMetadata"]["modelConfigOverride"],
@@ -124,7 +130,7 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_stream_app_chat",
             new=AsyncMock(return_value=app_chat_result),
-        ), patch.object(service, "_stream_ws", new=AsyncMock()) as ws_mock:
+        ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
                 model_info=model_info,
@@ -139,32 +145,30 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             chunks = [chunk async for chunk in result.data]
 
         self.assertEqual(chunks, [_image_completed_chunk()])
-        ws_mock.assert_not_awaited()
+        stream_mock.assert_awaited_once()
 
-    async def test_stream_falls_back_when_app_chat_fails_before_first_valid_chunk(self):
+    async def test_stream_retries_legacy_strategy_when_auto_fails_before_first_valid_chunk(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
-        app_chat_result = ImageGenerationResult(
+        auto_result = ImageGenerationResult(
             stream=True,
             data=_async_stream(
                 [_image_progress_chunk()],
                 UpstreamException("app-chat failed", details={"status": 502}),
             ),
         )
-        ws_result = ImageGenerationResult(
+        legacy_result = ImageGenerationResult(
             stream=True,
-            data=_async_stream([_image_completed_chunk("https://cdn.example.com/ws.png")]),
+            data=_async_stream(
+                [_image_completed_chunk("https://cdn.example.com/legacy.png")]
+            ),
         )
 
         with patch.object(
             service,
             "_stream_app_chat",
-            new=AsyncMock(return_value=app_chat_result),
-        ), patch.object(
-            service,
-            "_stream_ws",
-            new=AsyncMock(return_value=ws_result),
-        ) as ws_mock:
+            new=AsyncMock(side_effect=[auto_result, legacy_result]),
+        ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
                 model_info=model_info,
@@ -182,10 +186,10 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             chunks,
             [
                 _image_progress_chunk(),
-                _image_completed_chunk("https://cdn.example.com/ws.png"),
+                _image_completed_chunk("https://cdn.example.com/legacy.png"),
             ],
         )
-        ws_mock.assert_awaited_once()
+        self.assertEqual(len(stream_mock.await_args_list), 2)
 
     async def test_stream_does_not_fallback_after_first_valid_chunk(self):
         service = ImageGenerationService()
@@ -202,7 +206,7 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             service,
             "_stream_app_chat",
             new=AsyncMock(return_value=app_chat_result),
-        ), patch.object(service, "_stream_ws", new=AsyncMock()) as ws_mock:
+        ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
                 model_info=model_info,
@@ -224,40 +228,32 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
             chunks,
             [_chat_image_chunk("![image](https://cdn.example.com/app-chat.png)")],
         )
-        ws_mock.assert_not_awaited()
+        stream_mock.assert_awaited_once()
 
-    async def test_collect_falls_back_when_app_chat_returns_empty(self):
+    async def test_collect_raises_when_all_app_chat_strategies_return_empty(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
-        ws_result = ImageGenerationResult(
-            stream=False,
-            data=["https://cdn.example.com/ws.png"],
-            usage_override={"total_tokens": 0},
-        )
 
         with patch.object(
             service,
             "_collect_app_chat",
-            new=AsyncMock(return_value=[]),
-        ), patch.object(
-            service,
-            "_collect_ws",
-            new=AsyncMock(return_value=ws_result),
-        ) as ws_mock:
-            result = await service._collect_with_fallback(
-                token_mgr=object(),
-                token="token",
-                model_info=model_info,
-                tried_tokens={"token"},
-                prompt="draw a cat",
-                n=1,
-                response_format="url",
-                aspect_ratio="1:1",
-                enable_nsfw=False,
-            )
+            new=AsyncMock(side_effect=[[], []]),
+        ) as collect_mock:
+            with self.assertRaises(UpstreamException) as ctx:
+                await service._collect_with_fallback(
+                    token_mgr=object(),
+                    token="token",
+                    model_info=model_info,
+                    tried_tokens={"token"},
+                    prompt="draw a cat",
+                    n=1,
+                    response_format="url",
+                    aspect_ratio="1:1",
+                    enable_nsfw=False,
+                )
 
-        self.assertIs(result, ws_result)
-        ws_mock.assert_awaited_once()
+        self.assertIn("exhausted without final image", str(ctx.exception))
+        self.assertEqual(len(collect_mock.await_args_list), 2)
 
 
 if __name__ == "__main__":
