@@ -468,8 +468,8 @@ class AppChatReverse:
                 try:
                     async for line in response.aiter_lines():
                         _line_count += 1
-                        if _line_count <= 5:
-                            raw_preview = str(line)[:800] if line else ""
+                        if _line_count <= 15:
+                            raw_preview = str(line)[:1200] if line else ""
                             logger.info(
                                 f"AppChatReverse raw line#{_line_count}: {raw_preview}"
                             )
