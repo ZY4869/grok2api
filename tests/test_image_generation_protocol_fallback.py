@@ -8,6 +8,7 @@ from app.services.grok.services.image import ImageGenerationResult, ImageGenerat
 from app.services.grok.services.model import ModelService
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
+    APP_CHAT_REQUEST_MODE_ID,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
 )
 
@@ -50,6 +51,13 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_retries_legacy_strategy_before_failing(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
+        mode_id_result = ImageGenerationResult(
+            stream=True,
+            data=_async_stream(
+                [_image_progress_chunk()],
+                UpstreamException("mode_id failed", details={"status": 502}),
+            ),
+        )
         auto_result = ImageGenerationResult(
             stream=True,
             data=_async_stream(
@@ -65,7 +73,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             service,
             "_stream_app_chat",
-            new=AsyncMock(side_effect=[auto_result, legacy_result]),
+            new=AsyncMock(side_effect=[mode_id_result, auto_result, legacy_result]),
         ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
@@ -84,12 +92,13 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             chunks,
             [
                 _image_progress_chunk(),
+                _image_progress_chunk(),
                 _image_completed_chunk("https://cdn.example.com/legacy.png"),
             ],
         )
         self.assertEqual(
             [call.kwargs["request_strategy"] for call in stream_mock.await_args_list],
-            [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
+            [APP_CHAT_REQUEST_MODE_ID, APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
 
     async def test_collect_retries_legacy_strategy_before_returning_success(self):
@@ -101,6 +110,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             "_collect_app_chat",
             new=AsyncMock(
                 side_effect=[
+                    [],
                     [],
                     ["https://cdn.example.com/legacy.png"],
                 ]
@@ -121,10 +131,10 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.data, ["https://cdn.example.com/legacy.png"])
         self.assertEqual(
             [call.kwargs["request_strategy"] for call in collect_mock.await_args_list],
-            [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
+            [APP_CHAT_REQUEST_MODE_ID, APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
 
-    async def test_collect_raises_after_both_app_chat_strategies_fail(self):
+    async def test_collect_raises_after_all_app_chat_strategies_fail(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
 
@@ -133,6 +143,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
             "_collect_app_chat",
             new=AsyncMock(
                 side_effect=[
+                    UpstreamException("mode_id failed", details={"status": 502}),
                     UpstreamException("auto failed", details={"status": 502}),
                     UpstreamException("legacy failed", details={"status": 502}),
                 ]
@@ -153,13 +164,20 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [call.kwargs["request_strategy"] for call in collect_mock.await_args_list],
-            [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
+            [APP_CHAT_REQUEST_MODE_ID, APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
         self.assertIn("legacy failed", str(ctx.exception))
 
-    async def test_stream_raises_after_both_app_chat_strategies_fail(self):
+    async def test_stream_raises_after_all_app_chat_strategies_fail(self):
         service = ImageGenerationService()
         model_info = ModelService.get("grok-imagine-1.0")
+        mode_id_result = ImageGenerationResult(
+            stream=True,
+            data=_async_stream(
+                [_image_progress_chunk()],
+                UpstreamException("mode_id failed", details={"status": 502}),
+            ),
+        )
         auto_result = ImageGenerationResult(
             stream=True,
             data=_async_stream(
@@ -178,7 +196,7 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             service,
             "_stream_app_chat",
-            new=AsyncMock(side_effect=[auto_result, legacy_result]),
+            new=AsyncMock(side_effect=[mode_id_result, auto_result, legacy_result]),
         ) as stream_mock:
             result = await service._stream_with_fallback(
                 token="token",
@@ -198,11 +216,11 @@ class ImageGenerationProtocolFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             chunks,
-            [_image_progress_chunk(), _image_progress_chunk()],
+            [_image_progress_chunk(), _image_progress_chunk(), _image_progress_chunk()],
         )
         self.assertEqual(
             [call.kwargs["request_strategy"] for call in stream_mock.await_args_list],
-            [APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
+            [APP_CHAT_REQUEST_MODE_ID, APP_CHAT_REQUEST_MODEL_ID_AUTO, APP_CHAT_REQUEST_LEGACY_MODEL],
         )
         self.assertIn("legacy failed", str(ctx.exception))
 

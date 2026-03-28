@@ -237,7 +237,7 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             service,
             "_collect_app_chat",
-            new=AsyncMock(side_effect=[[], []]),
+            new=AsyncMock(side_effect=[[], [], []]),
         ) as collect_mock:
             with self.assertRaises(UpstreamException) as ctx:
                 await service._collect_with_fallback(
@@ -253,7 +253,7 @@ class ImageGenerationServiceTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertIn("exhausted without final image", str(ctx.exception))
-        self.assertEqual(len(collect_mock.await_args_list), 2)
+        self.assertEqual(len(collect_mock.await_args_list), 3)
 
 
 if __name__ == "__main__":

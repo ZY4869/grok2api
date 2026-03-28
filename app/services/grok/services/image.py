@@ -36,11 +36,13 @@ from app.services.token.quota import (
 )
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
+    APP_CHAT_REQUEST_MODE_ID,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
 )
 
 
 APP_CHAT_IMAGE_REQUEST_STRATEGIES = (
+    APP_CHAT_REQUEST_MODE_ID,
     APP_CHAT_REQUEST_MODEL_ID_AUTO,
     APP_CHAT_REQUEST_LEGACY_MODEL,
 )
@@ -528,15 +530,19 @@ class ImageGenerationService:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
 
+        # MODE_ID strategy requires modeId="auto" for image generation
+        mode = "auto" if request_strategy == APP_CHAT_REQUEST_MODE_ID else model_info.model_mode
+        use_mode_id = True if request_strategy == APP_CHAT_REQUEST_MODE_ID else model_info.use_mode_id
+
         response = await GrokChatService().chat(
             token=token,
             message=prompt,
             model=model_info.grok_model,
-            mode=model_info.model_mode,
+            mode=mode,
             stream=True,
             request_overrides=self._build_request_overrides(n, enable_nsfw),
             tool_overrides={"imageGen": True},
-            use_mode_id=model_info.use_mode_id,
+            use_mode_id=use_mode_id,
             request_strategy=request_strategy,
         )
         processor = AppChatImageStreamProcessor(
@@ -667,15 +673,19 @@ class ImageGenerationService:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
 
+        # MODE_ID strategy requires modeId="auto" for image generation
+        mode = "auto" if request_strategy == APP_CHAT_REQUEST_MODE_ID else model_info.model_mode
+        use_mode_id = True if request_strategy == APP_CHAT_REQUEST_MODE_ID else model_info.use_mode_id
+
         response = await GrokChatService().chat(
             token=token,
             message=prompt,
             model=model_info.grok_model,
-            mode=model_info.model_mode,
+            mode=mode,
             stream=True,
             request_overrides=self._build_request_overrides(n, enable_nsfw),
             tool_overrides={"imageGen": True},
-            use_mode_id=model_info.use_mode_id,
+            use_mode_id=use_mode_id,
             request_strategy=request_strategy,
         )
         processor = AppChatImageCollectProcessor(
