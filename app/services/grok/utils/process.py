@@ -79,13 +79,34 @@ def _maybe_parse_json(value: Any) -> Any:
     return value
 
 
+_GROK_ASSETS_BASE = "https://assets.grok.com/"
+
+
+def _normalize_grok_image_url(url: str) -> str:
+    """Normalize relative Grok asset paths to absolute URLs."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://", "//")):
+        return text
+    # Relative path like "users/.../generated/.../image.jpg"
+    if "/" in text and ("generated/" in text or "assets" in text):
+        return f"{_GROK_ASSETS_BASE}{text.lstrip('/')}"
+    return text
+
+
 def _looks_like_image_ref(value: str) -> bool:
     text = (value or "").strip()
     if not text or any(ch.isspace() for ch in text):
         return False
     if text.startswith(("http://", "https://", "/")):
         return True
-    return "assets.grok.com" in text
+    if "assets.grok.com" in text:
+        return True
+    # Relative Grok asset path: "users/.../generated/.../image.jpg"
+    if "generated/" in text and "/" in text:
+        return True
+    return False
 
 
 def _collect_image_chunk_urls(
@@ -166,7 +187,7 @@ def _collect_image_references(obj: Any) -> List[ImageReference]:
     seen: set[str] = set()
 
     def add_ref(url: str, source_shape: str, card_type: str = "") -> None:
-        text = (url or "").strip()
+        text = _normalize_grok_image_url((url or "").strip())
         if not _looks_like_image_ref(text) or text in seen:
             return
         seen.add(text)
