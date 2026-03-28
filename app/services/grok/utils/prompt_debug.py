@@ -17,12 +17,20 @@ _PRIMARY_IMAGE_INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(image|picture|photo|art|illustration|poster|avatar|wallpaper|logo)\b.{0,24}\b(of|for|showing|with)\b",
         re.IGNORECASE,
     ),
+    "english_visual_verb_short": re.compile(
+        r"^\s*(generate|create|draw|paint|illustrate|render|design)\b\s+(?!.*\b(code|report|list|file|text|summary|docs?|plan|test|function|class|table|query|email)\b).{2,60}$",
+        re.IGNORECASE,
+    ),
     "cn_generate_visual": re.compile(
         r"(?:\u751f\u6210|\u5236\u4f5c|\u753b|\u7ed8|\u51fa)(?:.{0,10})(?:\u56fe\u7247|\u56fe\u50cf|\u63d2\u753b|\u7acb\u7ed8|\u5934\u50cf|\u6d77\u62a5|\u58c1\u7eb8)",
         re.IGNORECASE,
     ),
     "cn_image_command": re.compile(
         r"(?:\u56fe\u7247|\u56fe\u50cf)\u751f\u6210|(?:\u753b\u56fe|\u7ed8\u56fe|\u51fa\u56fe)|(?:\u753b\u4e00\u5f20|\u751f\u6210\u4e00\u5f20)(?:.{0,10})(?:\u56fe|\u56fe\u7247|\u63d2\u753b|\u7acb\u7ed8|\u5934\u50cf|\u6d77\u62a5|\u58c1\u7eb8)",
+        re.IGNORECASE,
+    ),
+    "cn_visual_verb_object": re.compile(
+        r"(生成|画|绘制|帮我画|帮我生成|请生成|请画)\s*(一个|一张|一幅|个|张)\S",
         re.IGNORECASE,
     ),
 }
