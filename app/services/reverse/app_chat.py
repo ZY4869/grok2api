@@ -162,7 +162,10 @@ def _update_metadata_from_line(
     if raw_line is None:
         return
 
-    text = str(raw_line).strip()
+    if isinstance(raw_line, (bytes, bytearray)):
+        text = raw_line.decode("utf-8", errors="ignore").strip()
+    else:
+        text = str(raw_line).strip()
     if not text:
         return
     if text.startswith("data:"):
