@@ -465,26 +465,16 @@ class AppChatReverse:
                 try:
                     async for line in response.aiter_lines():
                         _line_count += 1
-                        if _line_count <= 3:
-                            raw_preview = str(line)[:500] if line else ""
+                        if _line_count <= 5:
+                            raw_preview = str(line)[:800] if line else ""
                             logger.info(
-                                "AppChatReverse raw stream line",
-                                extra={
-                                    "line_num": _line_count,
-                                    "raw_preview": raw_preview,
-                                    "conversation_id": metadata.conversation_id or "",
-                                },
+                                f"AppChatReverse raw line#{_line_count}: {raw_preview}"
                             )
                         _update_metadata_from_line(metadata, line)
                         yield line
                 finally:
                     logger.info(
-                        "AppChatReverse stream ended",
-                        extra={
-                            "total_lines": _line_count,
-                            "conversation_id": metadata.conversation_id or "",
-                            "response_id": metadata.response_id or "",
-                        },
+                        f"AppChatReverse stream ended: lines={_line_count} conv={metadata.conversation_id or ''} resp={metadata.response_id or ''}"
                     )
                     await session.close()
 
