@@ -1943,6 +1943,16 @@ class StreamProcessor(proc_base.BaseProcessor):
                     yield self._sse(role="assistant")
                     self.role_sent = True
 
+                # Surface stream-level errors (e.g. image generation rate limit)
+                if err := resp.get("error"):
+                    err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                    if err_msg:
+                        close_chunk = self._close_think_chunk()
+                        if close_chunk:
+                            yield close_chunk
+                        yield self._sse(err_msg)
+                    continue
+
                 if img := resp.get("streamingImageGenerationResponse"):
                     refs = proc_base._collect_image_references(
                         {"streamingImageGenerationResponse": img}
@@ -2182,6 +2192,12 @@ class CollectProcessor(proc_base.BaseProcessor):
 
                 if (llm := resp.get("llmInfo")) and not fingerprint:
                     fingerprint = llm.get("modelHash", "")
+
+                # Surface stream-level errors (e.g. image generation rate limit)
+                if err := resp.get("error"):
+                    err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                    if err_msg and not content:
+                        content = err_msg
 
                 if img := resp.get("streamingImageGenerationResponse"):
                     refs = proc_base._collect_image_references(
