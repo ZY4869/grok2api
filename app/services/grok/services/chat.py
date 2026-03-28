@@ -506,12 +506,22 @@ _AUTO_IMAGE_INTENT_PATTERNS = (
         r"\b(image|picture|photo|art|illustration|poster|avatar|wallpaper|logo)\b.{0,24}\b(of|for|showing|with)\b",
         re.IGNORECASE,
     ),
+    # Short prompts with visual verbs — likely image generation.
+    re.compile(
+        r"^\s*(generate|create|draw|paint|illustrate|render|design)\b\s+(?!.*\b(code|report|list|file|text|summary|docs?|plan|test|function|class|table|query|email)\b).{2,60}$",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"(生图|出图|画图|绘图|生成图|生成图片|生成图像|做图|画一张|画个|来一张图|给我一张图|帮我生成)",
         re.IGNORECASE,
     ),
     re.compile(
         r"(生成|制作|画|绘制|绘画|来|帮我).{0,10}(一张|一个|几张|些)?(图片|图像|照片|插画|海报|头像|壁纸|配图|表情包|图)",
+        re.IGNORECASE,
+    ),
+    # Chinese: "生成/画 + 一个/一张 + <short object>" — visual generation intent.
+    re.compile(
+        r"(生成|画|绘制|帮我画|帮我生成|请生成|请画)\s*(一个|一张|一幅|个|张)\S",
         re.IGNORECASE,
     ),
 )
@@ -719,19 +729,24 @@ def _has_quick_image_tool_signal(value: Any) -> bool:
     return False
 
 
-def _quick_image_state_wait_timeout() -> float:
+def _quick_image_state_wait_timeout(state: QuickImagePendingState = None) -> float:
     final_timeout = float(get_config("image.final_timeout") or 15)
+    # When the stream contained image generation events, Grok is actively
+    # generating — use the full timeout instead of the short state-wait cap.
+    if state and state.saw_streaming_image_event:
+        return max(0.1, final_timeout)
     return max(0.1, min(_QUICK_IMAGE_STATE_WAIT_MAX_SEC, final_timeout))
 
 
 def _should_arm_quick_image_state_wait(state: QuickImagePendingState) -> bool:
-    return bool(
-        state.conversation_id
-        and not state.prompt_intent
-        and not state.saw_final_image
-        and not state.saw_tool_call_result
-        and state.has_short_or_empty_text
-    )
+    if state.prompt_intent or state.saw_final_image or state.saw_tool_call_result:
+        return False
+    if not state.conversation_id:
+        return False
+    # If we saw streaming image events, Grok is definitely generating an image.
+    if state.saw_streaming_image_event:
+        return True
+    return state.has_short_or_empty_text
 
 
 def _should_skip_quick_image_state_wait(state: QuickImagePendingState) -> bool:
@@ -1017,25 +1032,10 @@ async def _poll_quick_image_final_urls(
                         token,
                         conversation_id,
                     )
-                    poll_preview = _collect_preview_image_urls(payload)
-                    for preview_url in poll_preview:
+                    for preview_url in _collect_preview_image_urls(payload):
                         if preview_url not in known_preview_urls:
                             known_preview_urls.append(preview_url)
                     final_urls = _collect_final_image_urls(payload)
-                    logger.info(
-                        "Quick image conversations_v2 poll result",
-                        extra={
-                            "model": model,
-                            "conversation_id": conversation_id,
-                            "response_id": response_id,
-                            "poll_preview_count": len(poll_preview),
-                            "poll_preview_urls": poll_preview[:3],
-                            "final_urls_count": len(final_urls),
-                            "final_urls": final_urls[:3],
-                            "known_preview_total": len(known_preview_urls),
-                            "payload_keys": list(payload.keys()) if isinstance(payload, dict) else str(type(payload)),
-                        },
-                    )
                     if final_urls:
                         return final_urls
                 except Exception as exc:
@@ -1132,21 +1132,6 @@ async def _augment_quick_image_response_stream(
     # Re-read metadata after stream completes: conversation_id is populated
     # incrementally by _update_metadata_from_line during iteration.
     state.note_metadata(metadata)
-    logger.info(
-        "Quick image post-stream metadata refresh",
-        extra={
-            "model": model,
-            "conversation_id": state.conversation_id or "",
-            "response_id": state.response_id or "",
-            "preview_urls_count": len(state.preview_urls),
-            "preview_urls": state.preview_urls[:3],
-            "saw_streaming_image_event": state.saw_streaming_image_event,
-            "saw_final_image": state.saw_final_image,
-            "prompt_intent": state.prompt_intent,
-            "metadata_conversation_id": metadata.conversation_id or "",
-            "metadata_response_id": metadata.response_id or "",
-        },
-    )
 
     if state.saw_final_image:
         logger.info(
@@ -1183,7 +1168,7 @@ async def _augment_quick_image_response_stream(
         )
     elif _should_arm_quick_image_state_wait(state):
         wait_mode = "state"
-        wait_timeout = _quick_image_state_wait_timeout()
+        wait_timeout = _quick_image_state_wait_timeout(state)
         logger.info(
             "Quick image wait_armed_by_state",
             extra=_quick_image_log_extra(
