@@ -1114,6 +1114,10 @@ async def _augment_quick_image_response_stream(
             )
         yield prepared_line.raw_line
 
+    # Re-read metadata after stream completes: conversation_id is populated
+    # incrementally by _update_metadata_from_line during iteration.
+    state.note_metadata(metadata)
+
     if state.saw_final_image:
         logger.info(
             "Quick image completed in primary stream",
