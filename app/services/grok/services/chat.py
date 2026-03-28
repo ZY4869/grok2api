@@ -2225,7 +2225,10 @@ class CollectProcessor(proc_base.BaseProcessor):
 
                 if mr := resp.get("modelResponse"):
                     response_id = mr.get("responseId", "")
-                    content = mr.get("message", "")
+                    mr_message = mr.get("message", "")
+                    # Preserve stream error content when modelResponse.message is empty
+                    if mr_message or not content:
+                        content = mr_message
 
                     card_map: dict[str, tuple[str, str]] = {}
                     for raw in mr.get("cardAttachmentsJson") or []:
