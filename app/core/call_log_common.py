@@ -106,6 +106,7 @@ def build_call_log_response(
     accounts: list[dict[str, Any]],
     account_stats: dict[str, Any] | None = None,
     quick_image_limit_stats: dict[str, Any] | None = None,
+    today_generation_stats: dict[str, Any] | None = None,
     page: int,
     page_size: int,
     migration_status: dict[str, Any] | None = None,
@@ -135,6 +136,13 @@ def build_call_log_response(
             "total_hits": 0,
             "unique_accounts": 0,
             "items": [],
+        },
+        "today_generation_stats": today_generation_stats
+        or {
+            "timezone": "Asia/Shanghai",
+            "date": "",
+            "image_count": 0,
+            "video_count": 0,
         },
         "pagination": {
             "page": current_page,

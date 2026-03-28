@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.v1.admin.call_log import router as call_log_router
+from app.core.call_log_admin import build_today_generation_window
 from app.core.call_log_legacy import load_legacy_call_logs
 from app.core.call_log_store import CallLogStoreFactory, get_call_log_store
 from app.services.token.quota import IMAGE_LIMIT_SINGLE_MESSAGE
@@ -17,6 +18,7 @@ from app.services.token.quota import IMAGE_LIMIT_SINGLE_MESSAGE
 def _record(
     index: int,
     *,
+    created_at: int | None = None,
     status: str = "success",
     token: str = "",
     pool: str | None = None,
@@ -27,7 +29,7 @@ def _record(
 ) -> dict:
     return {
         "id": f"log-{index}",
-        "created_at": 1_710_000_000_000 + index,
+        "created_at": created_at if created_at is not None else 1_710_000_000_000 + index,
         "status": status,
         "api_type": "chat.completions",
         "model": model,
@@ -70,8 +72,18 @@ class _DummyPool:
 
 
 class _DummyTokenManager:
-    def __init__(self, pools=None):
+    def __init__(self, pools=None, *, reload_callback=None):
         self.pools = pools or {}
+        self.reload_callback = reload_callback
+        self.reload_calls = 0
+
+    async def reload(self):
+        self.reload_calls += 1
+        if not callable(self.reload_callback):
+            return
+        result = self.reload_callback(self)
+        if asyncio.iscoroutine(result):
+            await result
 
 
 class CallLogAdminApiTests(unittest.TestCase):
@@ -141,6 +153,9 @@ class CallLogAdminApiTests(unittest.TestCase):
         self.assertEqual(payload["account_stats"]["total_accounts"], 0)
         self.assertEqual(payload["account_stats"]["available_accounts"], 0)
         self.assertEqual(payload["quick_image_limit_stats"]["total_hits"], 0)
+        self.assertEqual(payload["today_generation_stats"]["timezone"], "Asia/Shanghai")
+        self.assertEqual(payload["today_generation_stats"]["image_count"], 0)
+        self.assertEqual(payload["today_generation_stats"]["video_count"], 0)
 
         second_page = self.client.get(
             "/v1/admin/call-logs?page=2", headers=self.auth_headers
@@ -194,6 +209,44 @@ class CallLogAdminApiTests(unittest.TestCase):
         content = export_response.content.decode("utf-8-sig")
         self.assertIn("mapped@example.com", content)
         self.assertIn("pool-a", content)
+
+    def test_query_refreshes_token_snapshot_before_building_account_stats(self):
+        asyncio.run(
+            self._reset_records(
+                [
+                    _record(
+                        1501,
+                        status="success",
+                        token="reload-token",
+                        pool="",
+                        email="",
+                    )
+                ]
+            )
+        )
+
+        def _populate_pools(manager):
+            manager.pools = {
+                "pool-r": _DummyPool(
+                    [
+                        _DummyTokenInfo("reload-token", email="reload@example.com", available=True),
+                        _DummyTokenInfo("spare-token", email="spare@example.com", available=False),
+                    ]
+                )
+            }
+
+        self.token_manager.pools = {}
+        self.token_manager.reload_callback = _populate_pools
+
+        response = self.client.get("/v1/admin/call-logs", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(self.token_manager.reload_calls, 1)
+        self.assertEqual(payload["account_stats"]["total_accounts"], 2)
+        self.assertEqual(payload["account_stats"]["available_accounts"], 1)
+        self.assertEqual(payload["items"][0]["email"], "reload@example.com")
+        self.assertEqual(payload["items"][0]["pool"], "pool-r")
 
     def test_quick_image_limit_stats_and_account_stats_follow_mixed_scope(self):
         asyncio.run(
@@ -266,6 +319,98 @@ class CallLogAdminApiTests(unittest.TestCase):
         self.assertEqual(account_stats["available_accounts"], 2)
         self.assertEqual(account_stats["limit_accounts"], 2)
         self.assertEqual(account_stats["called_accounts"], 3)
+
+    def test_today_generation_stats_only_count_successful_dedicated_media_models(self):
+        window = build_today_generation_window()
+        inside_start = window["start_ms"] + 1_000
+        inside_end = window["end_ms"] - 1_000
+        before_today = window["start_ms"] - 1_000
+        asyncio.run(
+            self._reset_records(
+                [
+                    _record(
+                        3101,
+                        created_at=inside_start,
+                        status="success",
+                        model="grok-imagine-1.0",
+                    ),
+                    _record(
+                        3102,
+                        created_at=inside_start + 1_000,
+                        status="success",
+                        model="grok-imagine-1.0-edit",
+                    ),
+                    _record(
+                        3103,
+                        created_at=inside_end,
+                        status="success",
+                        model="grok-imagine-1.0-video",
+                    ),
+                    _record(
+                        3104,
+                        created_at=inside_start + 2_000,
+                        status="success",
+                        model="grok-auto",
+                    ),
+                    _record(
+                        3105,
+                        created_at=inside_start + 3_000,
+                        status="fail",
+                        model="grok-imagine-1.0",
+                        error_message="upstream error",
+                    ),
+                    _record(
+                        3106,
+                        created_at=before_today,
+                        status="success",
+                        model="grok-imagine-1.0-video",
+                    ),
+                ]
+            )
+        )
+
+        response = self.client.get("/v1/admin/call-logs", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        stats = payload["today_generation_stats"]
+        self.assertEqual(stats["timezone"], "Asia/Shanghai")
+        self.assertEqual(stats["date"], window["date"])
+        self.assertEqual(stats["image_count"], 2)
+        self.assertEqual(stats["video_count"], 1)
+
+    def test_today_generation_stats_do_not_follow_current_filters(self):
+        window = build_today_generation_window()
+        inside_today = window["start_ms"] + 1_000
+        asyncio.run(
+            self._reset_records(
+                [
+                    _record(
+                        3201,
+                        created_at=inside_today,
+                        status="success",
+                        model="grok-imagine-1.0",
+                    ),
+                    _record(
+                        3202,
+                        created_at=inside_today + 1_000,
+                        status="success",
+                        model="grok-imagine-1.0-video",
+                    ),
+                ]
+            )
+        )
+
+        response = self.client.get(
+            "/v1/admin/call-logs?status=fail&model=grok-auto",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["summary"]["total_calls"], 0)
+        self.assertEqual(payload["today_generation_stats"]["image_count"], 1)
+        self.assertEqual(payload["today_generation_stats"]["video_count"], 1)
 
     def test_export_returns_utf8_bom_csv(self):
         response = self.client.get("/v1/admin/call-logs/export", headers=self.auth_headers)

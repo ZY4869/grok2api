@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from app.core.config import get_config
 
@@ -9,6 +11,7 @@ QUICK_IMAGE_LIMIT_MODELS = {"grok-auto", "grok-3-fast", "grok-4-expert"}
 QUICK_IMAGE_LIMIT_EN_MESSAGE = (
     "You've reached your image generation limit. Please try again later."
 )
+TODAY_GENERATION_TIMEZONE = "Asia/Shanghai"
 
 
 @lru_cache(maxsize=1)
@@ -20,6 +23,51 @@ def _image_limit_markers() -> tuple[str, str, str]:
     )
 
     return IMAGE_LIMIT_ERROR_CODE, IMAGE_LIMIT_SINGLE_MESSAGE, IMAGE_LIMIT_ALL_MESSAGE
+
+
+@lru_cache(maxsize=1)
+def _generation_model_sets() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    from app.services.grok.services.model import ModelService
+
+    image_models: list[str] = []
+    video_models: list[str] = []
+    for model in getattr(ModelService, "MODELS", []):
+        model_id = str(getattr(model, "model_id", "") or "").strip()
+        if not model_id:
+            continue
+        if getattr(model, "is_video", False):
+            video_models.append(model_id)
+        elif getattr(model, "is_image", False) or getattr(model, "is_image_edit", False):
+            image_models.append(model_id)
+    return tuple(image_models), tuple(video_models)
+
+
+async def refresh_admin_token_manager(token_mgr: Any) -> Any:
+    reload_fn = getattr(token_mgr, "reload", None)
+    if callable(reload_fn):
+        await reload_fn()
+    return token_mgr
+
+
+def build_today_generation_window(now: datetime | None = None) -> dict[str, Any]:
+    tz = ZoneInfo(TODAY_GENERATION_TIMEZONE)
+    local_now = now.astimezone(tz) if now else datetime.now(tz)
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return {
+        "timezone": TODAY_GENERATION_TIMEZONE,
+        "date": start.strftime("%Y-%m-%d"),
+        "start_ms": int(start.timestamp() * 1000),
+        "end_ms": int(end.timestamp() * 1000),
+    }
+
+
+def get_generation_model_ids() -> dict[str, tuple[str, ...]]:
+    image_models, video_models = _generation_model_sets()
+    return {
+        "image": image_models,
+        "video": video_models,
+    }
 
 
 def mask_token(token: str) -> str:
@@ -198,10 +246,13 @@ __all__ = [
     "QUICK_IMAGE_LIMIT_MODELS",
     "build_account_keyword_tokens",
     "build_account_stats",
+    "build_today_generation_window",
     "build_quick_image_limit_stats",
     "build_token_snapshot",
     "enrich_call_log_record",
     "enrich_call_log_records",
+    "get_generation_model_ids",
     "is_quick_image_limit_record",
     "mask_token",
+    "refresh_admin_token_manager",
 ]

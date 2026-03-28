@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.auth import verify_app_key
-from app.core.call_log_admin import build_account_keyword_tokens, build_token_snapshot
+from app.core.call_log_admin import (
+    build_account_keyword_tokens,
+    build_token_snapshot,
+    refresh_admin_token_manager,
+)
 from app.core.call_log_common import DEFAULT_CALL_LOG_PAGE_SIZE
 from app.core.call_log_store import get_call_log_store
 from app.core.config import get_config
@@ -86,6 +90,7 @@ async def get_call_logs(
 ):
     store = get_call_log_store()
     token_mgr = await get_token_manager()
+    await refresh_admin_token_manager(token_mgr)
     token_snapshot = build_token_snapshot(token_mgr)
     account_tokens = build_account_keyword_tokens(account_keyword, token_snapshot)
     retention_days = int(get_config("call_log.retention_days", 0) or 0)
@@ -127,6 +132,7 @@ async def export_call_logs(
 ):
     store = get_call_log_store()
     token_mgr = await get_token_manager()
+    await refresh_admin_token_manager(token_mgr)
     token_snapshot = build_token_snapshot(token_mgr)
     account_tokens = build_account_keyword_tokens(account_keyword, token_snapshot)
     retention_days = int(get_config("call_log.retention_days", 0) or 0)

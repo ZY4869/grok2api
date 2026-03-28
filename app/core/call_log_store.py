@@ -42,8 +42,10 @@ from app.core.call_log_common import (
 )
 from app.core.call_log_admin import (
     build_account_stats,
+    build_today_generation_window,
     build_quick_image_limit_stats,
     enrich_call_log_records,
+    get_generation_model_ids,
 )
 from app.core.call_log_legacy import clear_legacy_call_logs, get_legacy_call_log_source_name, load_legacy_call_logs
 from app.core.logger import logger
@@ -196,6 +198,7 @@ class CallLogStore:
             token_snapshot,
             quick_limit_stats=quick_image_limit_stats,
         )
+        today_generation_stats = await self._fetch_today_generation_stats()
         migration_status = await self.get_migration_status()
         return build_call_log_response(
             items=items,
@@ -203,6 +206,7 @@ class CallLogStore:
             accounts=accounts,
             account_stats=account_stats,
             quick_image_limit_stats=quick_image_limit_stats,
+            today_generation_stats=today_generation_stats,
             page=current_page,
             page_size=parsed.page_size,
             migration_status=migration_status,
@@ -515,6 +519,48 @@ class CallLogStore:
         records = [normalize_call_log_record(dict(row._mapping)) for row in rows]
         return enrich_call_log_records(records, token_snapshot)
 
+    async def _fetch_today_generation_stats(self) -> dict[str, Any]:
+        window = build_today_generation_window()
+        model_ids = get_generation_model_ids()
+        image_count = await self._count_success_by_models(
+            window["start_ms"],
+            window["end_ms"],
+            model_ids.get("image") or (),
+        )
+        video_count = await self._count_success_by_models(
+            window["start_ms"],
+            window["end_ms"],
+            model_ids.get("video") or (),
+        )
+        return {
+            "timezone": window["timezone"],
+            "date": window["date"],
+            "image_count": image_count,
+            "video_count": video_count,
+        }
+
+    async def _count_success_by_models(
+        self,
+        start_ms: int,
+        end_ms: int,
+        model_ids: tuple[str, ...],
+    ) -> int:
+        if not model_ids:
+            return 0
+        stmt = select(func.count()).select_from(call_log_entries).where(
+            and_(
+                call_log_entries.c.status == "success",
+                call_log_entries.c.created_at >= start_ms,
+                call_log_entries.c.created_at < end_ms,
+                call_log_entries.c.model.in_(list(model_ids)),
+            )
+        )
+        if self._backend == "sqlite":
+            return await asyncio.to_thread(self._fetch_scalar_sync, stmt)
+        async with self._async_engine.connect() as conn:
+            value = (await conn.execute(stmt)).scalar_one()
+        return coerce_int(value, 0)
+
     def _build_conditions(self, filters: CallLogFilters) -> list[Any]:
         conditions: list[Any] = []
         if filters.date_from:
@@ -631,6 +677,11 @@ class CallLogStore:
     def _fetch_meta_sync(self, stmt: Any) -> str | None:
         with self._sync_engine.connect() as conn:
             return conn.execute(stmt).scalar_one_or_none()
+
+    def _fetch_scalar_sync(self, stmt: Any) -> int:
+        with self._sync_engine.connect() as conn:
+            value = conn.execute(stmt).scalar_one()
+        return coerce_int(value, 0)
 
     def _set_meta_sync(self, value: str) -> None:
         with self._sync_engine.begin() as conn:

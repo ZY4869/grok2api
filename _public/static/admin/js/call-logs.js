@@ -153,11 +153,22 @@ function renderMigrationStatus(migrationStatus = {}) {
   node.textContent = "";
 }
 
-function renderAccountOverview(accountStats = {}) {
+function buildOverviewScopeNote(todayGenerationStats = {}) {
+  const date = String(todayGenerationStats.date || "").trim();
+  if (date) {
+    return `账号卡片来自最新账号池；今日生成来自北京时间 ${date} 聚合。`;
+  }
+  return "账号卡片来自最新账号池；今日生成来自北京时间当天聚合。";
+}
+
+function renderOverviewStats(accountStats = {}, todayGenerationStats = {}) {
   setText("account-total", String(accountStats.total_accounts || 0));
   setText("account-available", String(accountStats.available_accounts || 0));
   setText("account-limit", String(accountStats.limit_accounts || 0));
   setText("account-called", String(accountStats.called_accounts || 0));
+  setText("today-image-count", String(todayGenerationStats.image_count || 0));
+  setText("today-video-count", String(todayGenerationStats.video_count || 0));
+  setText("overview-scope-note", buildOverviewScopeNote(todayGenerationStats));
 }
 
 function renderQuickLimitTable(quickStats = {}) {
@@ -251,7 +262,7 @@ function renderAll(data = {}) {
   state.data = data;
   renderSummary(data.summary || {});
   renderMigrationStatus(data.migration_status || {});
-  renderAccountOverview(data.account_stats || {});
+  renderOverviewStats(data.account_stats || {}, data.today_generation_stats || {});
   renderQuickLimitTable(data.quick_image_limit_stats || {});
   renderLogs(data.items || [], data.pagination || {});
 }

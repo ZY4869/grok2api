@@ -7,7 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/common/css/common.css?v=1.7.0">
   <link rel="stylesheet" href="/static/admin/css/token.css?v=1.7.0">
-  <link rel="stylesheet" href="/static/admin/css/call-logs.css?v=1.7.0">
+  <link rel="stylesheet" href="/static/admin/css/call-logs.css?v=1.8.0">
   <link rel="stylesheet" href="/static/common/css/toast.css">
 </head>
 <body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
@@ -93,25 +93,33 @@
       <div class="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h3 class="text-lg font-semibold">账号概览</h3>
-          <p class="text-xs text-[var(--accents-4)] mt-1">全部账号 / 可用账号来自当前账号池；上限账号 / 调用账号来自当前筛选日志。</p>
+          <p id="overview-scope-note" class="text-xs text-[var(--accents-4)] mt-1">账号卡片来自最新账号池；今日生成来自北京时间当天聚合。</p>
         </div>
       </div>
-      <div class="account-overview-grid">
-        <article class="account-overview-card">
-          <span class="account-overview-label">全部账号</span>
+      <div class="call-log-summary-grid mt-4">
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">全部账号</span>
           <strong id="account-total">0</strong>
         </article>
-        <article class="account-overview-card">
-          <span class="account-overview-label">可用账号</span>
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">可用账号</span>
           <strong id="account-available">0</strong>
         </article>
-        <article class="account-overview-card">
-          <span class="account-overview-label">上限账号</span>
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">上限账号</span>
           <strong id="account-limit">0</strong>
         </article>
-        <article class="account-overview-card">
-          <span class="account-overview-label">调用账号</span>
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">调用账号</span>
           <strong id="account-called">0</strong>
+        </article>
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">今日生成图片</span>
+          <strong id="today-image-count">0</strong>
+        </article>
+        <article class="call-log-summary-card">
+          <span class="call-log-summary-label">今日生成视频</span>
+          <strong id="today-video-count">0</strong>
         </article>
       </div>
 
@@ -188,6 +196,6 @@
   <script src="/static/common/js/footer.js?v=1.7.0"></script>
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/admin/js/modal.js?v=1.0.0"></script>
-  <script src="/static/admin/js/call-logs.js?v=1.8.0"></script>
+  <script src="/static/admin/js/call-logs.js?v=1.9.0"></script>
 </body>
 </html>
