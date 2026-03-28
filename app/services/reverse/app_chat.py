@@ -244,7 +244,6 @@ class AppChatReverse:
             "imageAttachments": [],
             "imageGenerationCount": 2,
             "isAsyncChat": False,
-            "isReasoning": False,
             "message": message,
             "returnImageBytes": False,
             "returnRawGrokInXaiRequest": False,
@@ -287,7 +286,11 @@ class AppChatReverse:
             )
         payload["toolOverrides"] = merged_tool_overrides
 
-        if model_config_override:
+        # For mode_id strategy (auto mode), skip modelConfigOverride to keep
+        # responseMetadata empty — matching browser behavior.  Adding config
+        # overrides causes Grok to treat the request as text-only, suppressing
+        # image generation in auto mode.
+        if model_config_override and strategy != APP_CHAT_REQUEST_MODE_ID:
             payload.setdefault("responseMetadata", {})
             payload["responseMetadata"]["modelConfigOverride"] = model_config_override
 
