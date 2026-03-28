@@ -173,6 +173,9 @@ class ModelService:
         """鎸変紭鍏堢骇杩斿洖鍙敤 Token 姹犲垪琛?"""
         if model_id == HEAVY_MODEL_ID:
             return [HEAVY_POOL_NAME]
+        model = cls.get(model_id)
+        if model and model.is_video:
+            return [SUPER_POOL_NAME, HEAVY_POOL_NAME]
         return [BASIC_POOL_NAME, SUPER_POOL_NAME, HEAVY_POOL_NAME]
 
 
