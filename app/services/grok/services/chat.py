@@ -1017,10 +1017,25 @@ async def _poll_quick_image_final_urls(
                         token,
                         conversation_id,
                     )
-                    for preview_url in _collect_preview_image_urls(payload):
+                    poll_preview = _collect_preview_image_urls(payload)
+                    for preview_url in poll_preview:
                         if preview_url not in known_preview_urls:
                             known_preview_urls.append(preview_url)
                     final_urls = _collect_final_image_urls(payload)
+                    logger.info(
+                        "Quick image conversations_v2 poll result",
+                        extra={
+                            "model": model,
+                            "conversation_id": conversation_id,
+                            "response_id": response_id,
+                            "poll_preview_count": len(poll_preview),
+                            "poll_preview_urls": poll_preview[:3],
+                            "final_urls_count": len(final_urls),
+                            "final_urls": final_urls[:3],
+                            "known_preview_total": len(known_preview_urls),
+                            "payload_keys": list(payload.keys()) if isinstance(payload, dict) else str(type(payload)),
+                        },
+                    )
                     if final_urls:
                         return final_urls
                 except Exception as exc:
@@ -1117,6 +1132,21 @@ async def _augment_quick_image_response_stream(
     # Re-read metadata after stream completes: conversation_id is populated
     # incrementally by _update_metadata_from_line during iteration.
     state.note_metadata(metadata)
+    logger.info(
+        "Quick image post-stream metadata refresh",
+        extra={
+            "model": model,
+            "conversation_id": state.conversation_id or "",
+            "response_id": state.response_id or "",
+            "preview_urls_count": len(state.preview_urls),
+            "preview_urls": state.preview_urls[:3],
+            "saw_streaming_image_event": state.saw_streaming_image_event,
+            "saw_final_image": state.saw_final_image,
+            "prompt_intent": state.prompt_intent,
+            "metadata_conversation_id": metadata.conversation_id or "",
+            "metadata_response_id": metadata.response_id or "",
+        },
+    )
 
     if state.saw_final_image:
         logger.info(
