@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.auth import verify_app_key
+from app.core.call_log_admin import build_account_keyword_tokens, build_token_snapshot
 from app.core.call_log_common import DEFAULT_CALL_LOG_PAGE_SIZE
 from app.core.call_log_store import get_call_log_store
 from app.core.config import get_config
 from app.core.logger import logger
+from app.services.token.manager import get_token_manager
 
 router = APIRouter()
 
@@ -42,16 +44,18 @@ def _build_filters(
     api_type: str = "",
     model: str = "",
     account_keyword: str = "",
+    account_tokens: list[str] | None = None,
     date_from: str = "",
     date_to: str = "",
     page: int = 1,
     page_size: int = DEFAULT_CALL_LOG_PAGE_SIZE,
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     return {
         "status": status,
         "api_type": api_type,
         "model": model,
         "account_keyword": account_keyword,
+        "account_tokens": account_tokens or [],
         "date_from": _parse_date_value(date_from, end_of_day=False),
         "date_to": _parse_date_value(date_to, end_of_day=True),
         "page": page,
@@ -81,6 +85,9 @@ async def get_call_logs(
     page_size: int = Query(DEFAULT_CALL_LOG_PAGE_SIZE, ge=1, le=200),
 ):
     store = get_call_log_store()
+    token_mgr = await get_token_manager()
+    token_snapshot = build_token_snapshot(token_mgr)
+    account_tokens = build_account_keyword_tokens(account_keyword, token_snapshot)
     retention_days = int(get_config("call_log.retention_days", 0) or 0)
     await store.cleanup_call_logs(retention_days)
     filters = _build_filters(
@@ -88,12 +95,13 @@ async def get_call_logs(
         api_type=api_type,
         model=model,
         account_keyword=account_keyword,
+        account_tokens=account_tokens,
         date_from=date_from,
         date_to=date_to,
         page=page,
         page_size=page_size,
     )
-    response = await store.query_call_logs(filters)
+    response = await store.query_call_logs(filters, token_snapshot=token_snapshot)
     migration_status = response.get("migration_status") or {}
     if str(migration_status.get("state") or "") == "failed":
         logger.warning(
@@ -118,6 +126,9 @@ async def export_call_logs(
     date_to: str = Query(""),
 ):
     store = get_call_log_store()
+    token_mgr = await get_token_manager()
+    token_snapshot = build_token_snapshot(token_mgr)
+    account_tokens = build_account_keyword_tokens(account_keyword, token_snapshot)
     retention_days = int(get_config("call_log.retention_days", 0) or 0)
     await store.cleanup_call_logs(retention_days)
     filters = _build_filters(
@@ -125,6 +136,7 @@ async def export_call_logs(
         api_type=api_type,
         model=model,
         account_keyword=account_keyword,
+        account_tokens=account_tokens,
         date_from=date_from,
         date_to=date_to,
     )
@@ -147,7 +159,7 @@ async def export_call_logs(
 
     async def stream_csv():
         try:
-            async for chunk in store.iter_csv_export(filters):
+            async for chunk in store.iter_csv_export(filters, token_snapshot=token_snapshot):
                 yield chunk
             logger.info(
                 "Call log export completed",

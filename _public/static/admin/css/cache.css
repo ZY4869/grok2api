@@ -369,6 +369,19 @@
   text-align: right;
 }
 
+.cache-creator-cell {
+  max-width: 0;
+}
+
+.cache-creator-text {
+  display: block;
+  font-size: 12px;
+  color: var(--accents-5);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 .geist-table tr:last-child td {
   border-bottom: none;
 }

@@ -40,6 +40,11 @@ from app.core.call_log_common import (
     coerce_int,
     normalize_call_log_record,
 )
+from app.core.call_log_admin import (
+    build_account_stats,
+    build_quick_image_limit_stats,
+    enrich_call_log_records,
+)
 from app.core.call_log_legacy import clear_legacy_call_logs, get_legacy_call_log_source_name, load_legacy_call_logs
 from app.core.logger import logger
 from app.core.storage import DATA_DIR, StorageFactory
@@ -170,20 +175,34 @@ class CallLogStore:
         async with self._async_engine.begin() as conn:
             await conn.execute(insert(call_log_entries), [payload])
 
-    async def query_call_logs(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def query_call_logs(
+        self,
+        filters: dict[str, Any] | None = None,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         await self.prepare()
         parsed = build_call_log_filters(filters)
         summary = await self._fetch_summary(parsed)
         total_items = coerce_int(summary.get("total_calls"), 0)
         total_pages = max(1, (total_items + parsed.page_size - 1) // parsed.page_size)
         current_page = min(max(1, parsed.page), total_pages)
-        items = await self._fetch_items(parsed, current_page)
-        accounts = await self._fetch_accounts(parsed)
+        items = await self._fetch_items(parsed, current_page, token_snapshot=token_snapshot)
+        accounts = await self._fetch_accounts(parsed, token_snapshot=token_snapshot)
+        filtered_records = await self._fetch_filtered_records(parsed, token_snapshot=token_snapshot)
+        quick_image_limit_stats = build_quick_image_limit_stats(filtered_records)
+        account_stats = build_account_stats(
+            filtered_records,
+            token_snapshot,
+            quick_limit_stats=quick_image_limit_stats,
+        )
         migration_status = await self.get_migration_status()
         return build_call_log_response(
             items=items,
             summary=summary,
             accounts=accounts,
+            account_stats=account_stats,
+            quick_image_limit_stats=quick_image_limit_stats,
             page=current_page,
             page_size=parsed.page_size,
             migration_status=migration_status,
@@ -194,14 +213,23 @@ class CallLogStore:
         return coerce_int(summary.get("total_calls"), 0)
 
     async def iter_csv_export(
-        self, filters: dict[str, Any] | None = None, batch_size: int = 1000
+        self,
+        filters: dict[str, Any] | None = None,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
+        batch_size: int = 1000,
     ) -> AsyncIterator[bytes]:
         await self.prepare()
         parsed = build_call_log_filters(filters)
         yield self._render_csv_chunk([CALL_LOG_EXPORT_HEADERS], with_bom=True)
         offset = 0
         while True:
-            rows = await self._fetch_export_rows(parsed, offset, batch_size)
+            rows = await self._fetch_export_rows(
+                parsed,
+                offset,
+                batch_size,
+                token_snapshot=token_snapshot,
+            )
             if not rows:
                 break
             payload = [
@@ -379,7 +407,12 @@ class CallLogStore:
             "unique_accounts": coerce_int(unique_accounts, 0),
         }
 
-    async def _fetch_accounts(self, filters: CallLogFilters) -> list[dict[str, Any]]:
+    async def _fetch_accounts(
+        self,
+        filters: CallLogFilters,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         conditions = self._build_conditions(filters)
         call_count = func.count().label("call_count")
         last_called_at = func.max(call_log_entries.c.created_at).label("last_called_at")
@@ -415,9 +448,15 @@ class CallLogStore:
                     "last_called_at": coerce_int(row.last_called_at, 0),
                 }
             )
-        return accounts
+        return enrich_call_log_records(accounts, token_snapshot)
 
-    async def _fetch_items(self, filters: CallLogFilters, page: int) -> list[dict[str, Any]]:
+    async def _fetch_items(
+        self,
+        filters: CallLogFilters,
+        page: int,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         conditions = self._build_conditions(filters)
         stmt = select(call_log_entries)
         if conditions:
@@ -426,10 +465,16 @@ class CallLogStore:
             desc(call_log_entries.c.created_at), desc(call_log_entries.c.id)
         ).limit(filters.page_size).offset((page - 1) * filters.page_size)
         rows = await self._fetch_rows(stmt)
-        return [normalize_call_log_record(dict(row._mapping)) for row in rows]
+        records = [normalize_call_log_record(dict(row._mapping)) for row in rows]
+        return enrich_call_log_records(records, token_snapshot)
 
     async def _fetch_export_rows(
-        self, filters: CallLogFilters, offset: int, limit: int
+        self,
+        filters: CallLogFilters,
+        offset: int,
+        limit: int,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         conditions = self._build_conditions(filters)
         stmt = select(
@@ -451,7 +496,24 @@ class CallLogStore:
             desc(call_log_entries.c.created_at), desc(call_log_entries.c.id)
         ).limit(limit).offset(offset)
         rows = await self._fetch_rows(stmt)
-        return [dict(row._mapping) for row in rows]
+        return enrich_call_log_records(
+            [normalize_call_log_record(dict(row._mapping)) for row in rows],
+            token_snapshot,
+        )
+
+    async def _fetch_filtered_records(
+        self,
+        filters: CallLogFilters,
+        *,
+        token_snapshot: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = self._build_conditions(filters)
+        stmt = select(call_log_entries)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        rows = await self._fetch_rows(stmt)
+        records = [normalize_call_log_record(dict(row._mapping)) for row in rows]
+        return enrich_call_log_records(records, token_snapshot)
 
     def _build_conditions(self, filters: CallLogFilters) -> list[Any]:
         conditions: list[Any] = []
@@ -467,15 +529,20 @@ class CallLogStore:
         if filters.model:
             needle = f"%{filters.model.lower()}%"
             conditions.append(func.lower(call_log_entries.c.model).like(needle))
+        keyword_conditions: list[Any] = []
         if filters.account_keyword:
             needle = f"%{filters.account_keyword.lower()}%"
-            conditions.append(
-                or_(
+            keyword_conditions.extend(
+                [
                     func.lower(func.coalesce(call_log_entries.c.email, "")).like(needle),
                     func.lower(func.coalesce(call_log_entries.c.token, "")).like(needle),
                     func.lower(func.coalesce(call_log_entries.c.pool, "")).like(needle),
-                )
+                ]
             )
+        if filters.account_tokens:
+            keyword_conditions.append(call_log_entries.c.token.in_(list(filters.account_tokens)))
+        if keyword_conditions:
+            conditions.append(or_(*keyword_conditions))
         return conditions
 
     async def _fetch_summary_rows(self, summary_stmt: Any, unique_stmt: Any) -> tuple[Any, Any]:

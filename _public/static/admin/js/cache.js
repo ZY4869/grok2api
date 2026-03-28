@@ -45,6 +45,7 @@ const UI_MAP = {
   onlineCount: 'online-count',
   onlineStatus: 'online-status',
   onlineLastClear: 'online-last-clear',
+  exportLocalBtn: 'export-local-cache-btn',
   accountTableBody: 'account-table-body',
   accountEmpty: 'account-empty',
   selectAll: 'select-all',
@@ -1034,8 +1035,18 @@ function getActiveSelectedSet() {
 function updateToolbarForSection() {
   updateLoadButton();
   updateDeleteButton();
+  updateExportButton();
   updateSelectedCount();
   updateBatchProgress();
+}
+
+function updateExportButton() {
+  const button = ui.exportLocalBtn;
+  if (!button) return;
+  const isLocalSection = currentSection === 'image' || currentSection === 'video';
+  button.disabled = !isLocalSection;
+  button.classList.toggle('opacity-50', !isLocalSection);
+  button.classList.toggle('cursor-not-allowed', !isLocalSection);
 }
 
 function updateOnlineCountFromTokens(tokens) {
@@ -1120,7 +1131,7 @@ async function loadLocalCacheList(type, options = {}) {
   state.pageSize = pageSize;
   state.page = targetPage;
   updateLocalPaginationUI(type);
-  body.innerHTML = `<tr><td colspan="5">${t('common.loading')}</td></tr>`;
+  body.innerHTML = `<tr><td colspan="6">${t('common.loading')}</td></tr>`;
   try {
     const params = new URLSearchParams({
       type,
@@ -1131,7 +1142,7 @@ async function loadLocalCacheList(type, options = {}) {
       headers: buildAuthHeaders(apiKey)
     });
     if (!res.ok) {
-      body.innerHTML = `<tr><td colspan="5">${t('common.loadFailed')}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="6">${t('common.loadFailed')}</td></tr>`;
       state.loading = false;
       updateLocalPaginationUI(type);
       return;
@@ -1153,7 +1164,7 @@ async function loadLocalCacheList(type, options = {}) {
     state.loading = false;
     renderLocalCacheList(type, items);
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="5">${t('common.loadFailed')}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6">${t('common.loadFailed')}</td></tr>`;
     state.loading = false;
     updateLocalPaginationUI(type);
   }
@@ -1163,7 +1174,7 @@ function renderLocalCacheList(type, items) {
   const body = type === 'image' ? ui.localImageBody : ui.localVideoBody;
   if (!body) return;
   if (!items || items.length === 0) {
-    body.innerHTML = `<tr><td colspan="5" class="table-empty">${t('cache.noFiles')}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="table-empty">${t('cache.noFiles')}</td></tr>`;
     syncLocalSelectAllState(type);
     updateLocalPaginationUI(type);
     updateSelectedCount();
@@ -1209,6 +1220,17 @@ function renderLocalCacheList(type, items) {
     tdSize.className = 'text-left';
     tdSize.textContent = formatSize(item.size_bytes);
 
+    const tdCreator = document.createElement('td');
+    tdCreator.className = 'text-left cache-creator-cell';
+    const creatorText = document.createElement('span');
+    creatorText.className = 'cache-creator-text';
+    creatorText.textContent = item.creator_display || '未知账号';
+    const creatorDetails = Array.isArray(item.creator_details) ? item.creator_details : [];
+    if (creatorDetails.length > 0) {
+      creatorText.title = creatorDetails.join('\n');
+    }
+    tdCreator.appendChild(creatorText);
+
     const tdTime = document.createElement('td');
     tdTime.className = 'text-left text-xs text-gray-500';
     tdTime.textContent = formatTime(item.mtime_ms);
@@ -1234,6 +1256,7 @@ function renderLocalCacheList(type, items) {
 
     tr.appendChild(tdCheck);
     tr.appendChild(tdName);
+    tr.appendChild(tdCreator);
     tr.appendChild(tdSize);
     tr.appendChild(tdTime);
     tr.appendChild(tdActions);
@@ -1249,6 +1272,44 @@ function viewLocalFile(type, name) {
   const safeName = encodeURIComponent(name);
   const url = type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
   window.open(url, '_blank');
+}
+
+function parseFilename(response, fallback = 'cache-export.csv') {
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename=\"([^\"]+)\"/i);
+  return match && match[1] ? match[1] : fallback;
+}
+
+async function exportCurrentLocalCache() {
+  if (currentSection !== 'image' && currentSection !== 'video') {
+    showToast('当前仅支持导出本地图片或视频列表', 'info');
+    return;
+  }
+  try {
+    const response = await fetch(`/v1/admin/cache/export?type=${encodeURIComponent(currentSection)}`, {
+      headers: buildAuthHeaders(apiKey)
+    });
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = parseFilename(response, `cache-${currentSection}.csv`);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    showToast('缓存列表导出成功', 'success');
+  } catch (error) {
+    showToast(`导出失败：${error.message}`, 'error');
+  }
 }
 
 async function deleteLocalFile(type, name) {
@@ -1726,3 +1787,4 @@ async function clearOnlineCache(targetToken = '', skipConfirm = false) {
 }
 
 window.onload = init;
+window.exportCurrentLocalCache = exportCurrentLocalCache;

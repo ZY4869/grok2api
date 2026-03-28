@@ -91,24 +91,49 @@
 
     <section class="call-log-panel">
       <div class="flex items-center justify-between gap-3 flex-wrap">
-        <h3 class="text-lg font-semibold">账号排行 Top 20</h3>
-        <span id="accounts-count" class="text-xs text-[var(--accents-4)]"></span>
+        <div>
+          <h3 class="text-lg font-semibold">账号概览</h3>
+          <p class="text-xs text-[var(--accents-4)] mt-1">全部账号 / 可用账号来自当前账号池；上限账号 / 调用账号来自当前筛选日志。</p>
+        </div>
+      </div>
+      <div class="account-overview-grid">
+        <article class="account-overview-card">
+          <span class="account-overview-label">全部账号</span>
+          <strong id="account-total">0</strong>
+        </article>
+        <article class="account-overview-card">
+          <span class="account-overview-label">可用账号</span>
+          <strong id="account-available">0</strong>
+        </article>
+        <article class="account-overview-card">
+          <span class="account-overview-label">上限账号</span>
+          <strong id="account-limit">0</strong>
+        </article>
+        <article class="account-overview-card">
+          <span class="account-overview-label">调用账号</span>
+          <strong id="account-called">0</strong>
+        </article>
+      </div>
+
+      <div class="flex items-center justify-between gap-3 flex-wrap mt-6">
+        <div>
+          <h4 class="text-base font-semibold">快捷生图上限统计</h4>
+          <p id="quick-limit-summary" class="text-xs text-[var(--accents-4)] mt-1"></p>
+        </div>
       </div>
       <div class="overflow-x-auto">
-        <table class="geist-table call-log-table call-log-table--accounts">
+        <table class="geist-table call-log-table call-log-table--quick-limit">
           <thead>
             <tr>
-              <th class="text-left">Email</th>
+              <th class="text-left">账号</th>
               <th class="text-left">Token</th>
               <th class="text-center">Pool</th>
-              <th class="text-center">调用次数</th>
-              <th class="text-center">成功</th>
-              <th class="text-center">失败</th>
-              <th class="text-center">平均耗时</th>
-              <th class="text-center">最近调用</th>
+              <th class="text-center">命中次数</th>
+              <th class="text-center">最近命中时间</th>
+              <th class="text-left">最近错误</th>
             </tr>
           </thead>
-          <tbody id="accounts-table-body"></tbody>
+          <tbody id="quick-limit-table-body"></tbody>
         </table>
       </div>
     </section>

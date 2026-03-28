@@ -202,6 +202,7 @@ async def _select_media_token(token_mgr, model_id: str) -> str:
         exhausted_tokens=exhausted_tokens,
     )
     if selection.token:
+        token_mgr.bind_token_context(selection.token)
         return selection.token
     if requirement and all_candidate_tokens_exhausted(
         selection.total_candidates, exhausted_tokens

@@ -891,7 +891,16 @@ class ImageWSBaseProcessor(BaseProcessor):
             explicit_ext=ext,
         )
         filename = self._filename(image_id, is_final, ext=output_ext)
-        await self._asset_store.write_bytes("image", filename, file_bytes)
+        await self._asset_store.write_bytes(
+            "image",
+            filename,
+            file_bytes,
+            metadata={
+                "token": self.token,
+                "model": self.model,
+                "origin_kind": "generated_image" if is_final else "generated_preview",
+            },
+        )
         return self._asset_store.build_public_url("image", filename)
 
     def _pick_best(self, existing: Optional[Dict], incoming: Dict) -> Dict:

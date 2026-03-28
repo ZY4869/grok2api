@@ -1480,6 +1480,7 @@ class ChatService:
                 _raise_no_token(selection_total)
 
             tried_tokens.add(token)
+            token_mgr.bind_token_context(token)
 
             try:
                 # 请求 Grok

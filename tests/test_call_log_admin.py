@@ -11,23 +11,67 @@ from fastapi.testclient import TestClient
 from app.api.v1.admin.call_log import router as call_log_router
 from app.core.call_log_legacy import load_legacy_call_logs
 from app.core.call_log_store import CallLogStoreFactory, get_call_log_store
+from app.services.token.quota import IMAGE_LIMIT_SINGLE_MESSAGE
 
 
-def _record(index: int, *, status: str = "success", token: str = "", pool: str = "") -> dict:
+def _record(
+    index: int,
+    *,
+    status: str = "success",
+    token: str = "",
+    pool: str | None = None,
+    email: str | None = None,
+    model: str = "grok-3",
+    error_code: str = "",
+    error_message: str = "",
+) -> dict:
     return {
         "id": f"log-{index}",
         "created_at": 1_710_000_000_000 + index,
         "status": status,
         "api_type": "chat.completions",
-        "model": "grok-3",
-        "email": f"user-{index % 30}@example.com",
+        "model": model,
+        "email": f"user-{index % 30}@example.com" if email is None else email,
         "token": token or f"token-{index % 30}",
-        "pool": pool or f"pool-{index % 3}",
+        "pool": f"pool-{index % 3}" if pool is None else pool,
         "duration_ms": index * 10,
         "trace_id": f"trace-{index}",
-        "error_code": "" if status == "success" else "internal_error",
-        "error_message": "" if status == "success" else "failed",
+        "error_code": error_code if status == "fail" else "",
+        "error_message": error_message if status == "fail" else "",
     }
+
+
+class _DummyTokenInfo:
+    def __init__(
+        self,
+        token: str,
+        *,
+        email: str = "",
+        alive: bool = True,
+        available: bool = True,
+        status: str = "active",
+    ):
+        self.token = token
+        self.email = email
+        self.alive = alive
+        self.status = status
+        self._available = available
+
+    def is_available(self, consumed_mode):
+        return self._available
+
+
+class _DummyPool:
+    def __init__(self, infos):
+        self._infos = list(infos)
+
+    def list(self):
+        return list(self._infos)
+
+
+class _DummyTokenManager:
+    def __init__(self, pools=None):
+        self.pools = pools or {}
 
 
 class CallLogAdminApiTests(unittest.TestCase):
@@ -49,9 +93,17 @@ class CallLogAdminApiTests(unittest.TestCase):
         self.client = TestClient(self.app)
         self.auth_headers = {"Authorization": "Bearer grok2api"}
 
+        self.token_manager = _DummyTokenManager({})
+        self.token_manager_patch = patch(
+            "app.api.v1.admin.call_log.get_token_manager",
+            new=AsyncMock(return_value=self.token_manager),
+        )
+        self.token_manager_patch.start()
+
         asyncio.run(self._seed_records())
 
     def tearDown(self):
+        self.token_manager_patch.stop()
         self.client.close()
         asyncio.run(CallLogStoreFactory.close())
         self.env.stop()
@@ -62,6 +114,12 @@ class CallLogAdminApiTests(unittest.TestCase):
         for index in range(125):
             status = "success" if index % 2 == 0 else "fail"
             await store.append_call_log(_record(index, status=status))
+
+    async def _reset_records(self, records: list[dict]):
+        store = get_call_log_store()
+        await store.clear_call_logs()
+        for record in records:
+            await store.append_call_log(record)
 
     def test_requires_admin_auth(self):
         response = self.client.get("/v1/admin/call-logs")
@@ -80,6 +138,9 @@ class CallLogAdminApiTests(unittest.TestCase):
         self.assertEqual(payload["items"][-1]["id"], "log-25")
         self.assertEqual(payload["summary"]["unique_accounts"], 30)
         self.assertEqual(len(payload["accounts"]), 20)
+        self.assertEqual(payload["account_stats"]["total_accounts"], 0)
+        self.assertEqual(payload["account_stats"]["available_accounts"], 0)
+        self.assertEqual(payload["quick_image_limit_stats"]["total_hits"], 0)
 
         second_page = self.client.get(
             "/v1/admin/call-logs?page=2", headers=self.auth_headers
@@ -89,6 +150,122 @@ class CallLogAdminApiTests(unittest.TestCase):
         self.assertEqual(len(second_payload["items"]), 25)
         self.assertEqual(second_payload["items"][0]["id"], "log-24")
         self.assertEqual(second_payload["items"][-1]["id"], "log-0")
+
+    def test_query_backfills_account_fields_and_keyword_matches_current_snapshot(self):
+        asyncio.run(
+            self._reset_records(
+                [
+                    _record(
+                        1001,
+                        status="success",
+                        token="mapped-token",
+                        pool="",
+                        email="",
+                    )
+                ]
+            )
+        )
+        self.token_manager.pools = {
+            "pool-a": _DummyPool(
+                [_DummyTokenInfo("mapped-token", email="mapped@example.com", available=True)]
+            )
+        }
+
+        response = self.client.get(
+            "/v1/admin/call-logs?account_keyword=mapped@example.com",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["summary"]["total_calls"], 1)
+        self.assertEqual(payload["items"][0]["email"], "mapped@example.com")
+        self.assertEqual(payload["items"][0]["pool"], "pool-a")
+        self.assertEqual(payload["items"][0]["account_display"], "mapped@example.com")
+        self.assertEqual(payload["account_stats"]["total_accounts"], 1)
+        self.assertEqual(payload["account_stats"]["available_accounts"], 1)
+        self.assertEqual(payload["account_stats"]["called_accounts"], 1)
+
+        export_response = self.client.get(
+            "/v1/admin/call-logs/export?account_keyword=mapped@example.com",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(export_response.status_code, 200)
+        content = export_response.content.decode("utf-8-sig")
+        self.assertIn("mapped@example.com", content)
+        self.assertIn("pool-a", content)
+
+    def test_quick_image_limit_stats_and_account_stats_follow_mixed_scope(self):
+        asyncio.run(
+            self._reset_records(
+                [
+                    _record(
+                        2001,
+                        status="fail",
+                        token="quick-one",
+                        pool="",
+                        email="",
+                        model="grok-auto",
+                        error_code="image_generation_limit_reached",
+                        error_message="limit",
+                    ),
+                    _record(
+                        2002,
+                        status="fail",
+                        token="quick-one",
+                        pool="",
+                        email="",
+                        model="grok-3-fast",
+                        error_message="You've reached your image generation limit. Please try again later.",
+                    ),
+                    _record(
+                        2003,
+                        status="fail",
+                        token="quick-two",
+                        pool="",
+                        email="",
+                        model="grok-4-expert",
+                        error_message=IMAGE_LIMIT_SINGLE_MESSAGE,
+                    ),
+                    _record(
+                        2004,
+                        status="fail",
+                        token="other-token",
+                        pool="",
+                        email="",
+                        model="grok-imagine-1.0",
+                        error_message="You've reached your image generation limit. Please try again later.",
+                    ),
+                ]
+            )
+        )
+        self.token_manager.pools = {
+            "pool-a": _DummyPool(
+                [
+                    _DummyTokenInfo("quick-one", email="quick1@example.com", available=True),
+                    _DummyTokenInfo("quick-two", email="quick2@example.com", available=False),
+                ]
+            ),
+            "pool-b": _DummyPool(
+                [_DummyTokenInfo("other-token", email="other@example.com", available=True)]
+            ),
+        }
+
+        response = self.client.get("/v1/admin/call-logs", headers=self.auth_headers)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        quick_stats = payload["quick_image_limit_stats"]
+        self.assertEqual(quick_stats["total_hits"], 3)
+        self.assertEqual(quick_stats["unique_accounts"], 2)
+        self.assertEqual(quick_stats["items"][0]["email"], "quick1@example.com")
+        self.assertEqual(quick_stats["items"][0]["hit_count"], 2)
+
+        account_stats = payload["account_stats"]
+        self.assertEqual(account_stats["total_accounts"], 3)
+        self.assertEqual(account_stats["available_accounts"], 2)
+        self.assertEqual(account_stats["limit_accounts"], 2)
+        self.assertEqual(account_stats["called_accounts"], 3)
 
     def test_export_returns_utf8_bom_csv(self):
         response = self.client.get("/v1/admin/call-logs/export", headers=self.auth_headers)
@@ -101,7 +278,7 @@ class CallLogAdminApiTests(unittest.TestCase):
             "created_at,status,api_type,model,email,token,pool,duration_ms,trace_id,error_code,error_message",
         )
         self.assertEqual(len(lines), 126)
-        self.assertIn("log", response.headers.get("content-disposition", ""))
+        self.assertIn("call-logs-", response.headers.get("content-disposition", ""))
 
     def test_clear_removes_current_records(self):
         response = self.client.delete("/v1/admin/call-logs", headers=self.auth_headers)
@@ -195,4 +372,3 @@ class CallLogMigrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(status["state"], "failed")
         self.assertEqual(result["summary"]["total_calls"], 1)
-

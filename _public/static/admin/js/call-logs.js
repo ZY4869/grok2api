@@ -65,7 +65,7 @@ function formatTime(timestamp) {
 
 function maskToken(token) {
   const value = String(token || "");
-  if (!value) return "未分配账号";
+  if (!value) return "-";
   if (value.length <= 20) return value;
   return `${value.slice(0, 8)}...${value.slice(-10)}`;
 }
@@ -97,17 +97,34 @@ function setRefreshLoading(isLoading) {
   button.textContent = isLoading ? "刷新中..." : "刷新";
 }
 
-function getFilters() {
-  return {
+function getFilters(includePagination = true) {
+  const filters = {
     status: (byId("filter-status") && byId("filter-status").value) || "",
     api_type: (byId("filter-api-type") && byId("filter-api-type").value.trim()) || "",
     model: (byId("filter-model") && byId("filter-model").value.trim()) || "",
     account_keyword: (byId("filter-account") && byId("filter-account").value.trim()) || "",
     date_from: (byId("filter-date-from") && byId("filter-date-from").value) || "",
     date_to: (byId("filter-date-to") && byId("filter-date-to").value) || "",
-    page: String(state.page),
-    page_size: String(state.pageSize),
   };
+  if (includePagination) {
+    filters.page = String(state.page);
+    filters.page_size = String(state.pageSize);
+  }
+  return filters;
+}
+
+function buildQueryString(includePagination = true) {
+  const params = new URLSearchParams();
+  Object.entries(getFilters(includePagination)).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  return params.toString();
+}
+
+function parseFilename(response, fallback = "call-logs.csv") {
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename="([^"]+)"/i);
+  return match && match[1] ? match[1] : fallback;
 }
 
 function renderSummary(summary = {}) {
@@ -136,34 +153,46 @@ function renderMigrationStatus(migrationStatus = {}) {
   node.textContent = "";
 }
 
-function renderAccounts(accounts = [], summary = {}) {
-  const tbody = byId("accounts-table-body");
+function renderAccountOverview(accountStats = {}) {
+  setText("account-total", String(accountStats.total_accounts || 0));
+  setText("account-available", String(accountStats.available_accounts || 0));
+  setText("account-limit", String(accountStats.limit_accounts || 0));
+  setText("account-called", String(accountStats.called_accounts || 0));
+}
+
+function renderQuickLimitTable(quickStats = {}) {
+  const tbody = byId("quick-limit-table-body");
   if (!tbody) return;
 
-  const totalAccounts = Number(summary.unique_accounts || 0);
-  if (!Array.isArray(accounts) || accounts.length === 0) {
+  const totalHits = Number(quickStats.total_hits || 0);
+  const uniqueAccounts = Number(quickStats.unique_accounts || 0);
+  if (totalHits > 0) {
+    setText("quick-limit-summary", `当前筛选下共命中 ${totalHits} 次，涉及 ${uniqueAccounts} 个账号`);
+  } else {
+    setText("quick-limit-summary", "当前筛选下暂无快捷生图额度上限命中记录");
+  }
+
+  const items = Array.isArray(quickStats.items) ? quickStats.items : [];
+  if (items.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="8" class="text-center text-sm text-[var(--accents-4)] py-8">暂无账号聚合数据</td></tr>';
-    setText("accounts-count", totalAccounts > 0 ? `共 ${totalAccounts} 个账号` : "");
+      '<tr><td colspan="6" class="text-center text-sm text-[var(--accents-4)] py-8">暂无快捷生图上限命中记录</td></tr>';
     return;
   }
 
-  setText("accounts-count", `显示 Top ${accounts.length} / 共 ${totalAccounts} 个账号`);
-  tbody.innerHTML = accounts
-    .map(
-      (item) => `
+  tbody.innerHTML = items
+    .map((item) => {
+      const account = item.email || item.token_masked || item.token || "未知账号";
+      return `
         <tr>
-          <td class="text-left">${escapeHtml(item.email || "-")}</td>
-          <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
-          <td class="text-center">${escapeHtml(item.pool || "-")}</td>
-          <td class="text-center">${item.call_count || 0}</td>
-          <td class="text-center">${item.success_count || 0}</td>
-          <td class="text-center">${item.fail_count || 0}</td>
-          <td class="text-center">${item.avg_duration_ms || 0} ms</td>
-          <td class="text-center text-xs call-log-time-cell">${formatTime(item.last_called_at)}</td>
+          <td class="text-left text-xs">${escapeHtml(account)}</td>
+          <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(item.token_masked || maskToken(item.token || ""))}</td>
+          <td class="text-center text-xs">${escapeHtml(item.pool || "-")}</td>
+          <td class="text-center text-xs">${item.hit_count || 0}</td>
+          <td class="text-center text-xs call-log-time-cell">${formatTime(item.last_hit_at)}</td>
+          <td class="text-left text-xs call-log-error-cell">${escapeHtml(item.last_error_message || "-")}</td>
         </tr>
-      `
-    )
+      `;
+    })
     .join("");
 }
 
@@ -176,8 +205,10 @@ function renderLogs(items = [], pagination = {}) {
       '<tr><td colspan="10" class="text-center text-sm text-[var(--accents-4)] py-8">暂无调用明细</td></tr>';
   } else {
     tbody.innerHTML = items
-      .map(
-        (item) => `
+      .map((item) => {
+        const account = item.account_display || item.email || "未分配账号";
+        const tokenText = item.token_masked || maskToken(item.token || "");
+        return `
           <tr>
             <td class="text-left text-xs">${formatTime(item.created_at)}</td>
             <td class="text-center">
@@ -187,8 +218,8 @@ function renderLogs(items = [], pagination = {}) {
             </td>
             <td class="text-left text-xs">${escapeHtml(item.api_type || "-")}</td>
             <td class="text-left text-xs">${escapeHtml(item.model || "-")}</td>
-            <td class="text-left text-xs">${escapeHtml(item.email || "未分配账号")}</td>
-            <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(maskToken(item.token || ""))}</td>
+            <td class="text-left text-xs">${escapeHtml(account)}</td>
+            <td class="text-left font-mono text-xs text-gray-500 call-log-token-cell" title="${escapeHtml(item.token || "")}">${escapeHtml(tokenText)}</td>
             <td class="text-center text-xs">${escapeHtml(item.pool || "-")}</td>
             <td class="text-center text-xs">${item.duration_ms || 0} ms</td>
             <td class="text-left font-mono text-xs call-log-trace-cell">${escapeHtml(item.trace_id || "-")}</td>
@@ -197,14 +228,16 @@ function renderLogs(items = [], pagination = {}) {
               <div class="call-log-secondary">${escapeHtml(item.error_message || "")}</div>
             </td>
           </tr>
-        `
-      )
+        `;
+      })
       .join("");
   }
 
   const totalItems = pagination.total_items || 0;
   const totalPages = pagination.total_pages || 1;
   const currentPage = pagination.page || 1;
+  state.page = currentPage;
+  state.pageSize = pagination.page_size || state.pageSize;
   setText("logs-count", `当前筛选共 ${totalItems} 条记录`);
   setText("page-info", `第 ${currentPage} / ${totalPages} 页`);
 
@@ -218,19 +251,17 @@ function renderAll(data = {}) {
   state.data = data;
   renderSummary(data.summary || {});
   renderMigrationStatus(data.migration_status || {});
-  renderAccounts(data.accounts || [], data.summary || {});
+  renderAccountOverview(data.account_stats || {});
+  renderQuickLimitTable(data.quick_image_limit_stats || {});
   renderLogs(data.items || [], data.pagination || {});
 }
 
 async function loadCallLogs() {
   setStatus("加载中...");
-  const params = new URLSearchParams();
-  Object.entries(getFilters()).forEach(([key, value]) => {
-    if (value) params.set(key, value);
-  });
-
+  setRefreshLoading(true);
   try {
-    const response = await fetch(`/v1/admin/call-logs?${params.toString()}`, {
+    const query = buildQueryString(true);
+    const response = await fetch(`/v1/admin/call-logs?${query}`, {
       headers: buildAuthHeaders(apiKey),
     });
     const data = await readJsonResponse(response);
@@ -247,6 +278,8 @@ async function loadCallLogs() {
     console.error(error);
     setStatus("加载失败");
     showToast(`加载失败：${error.message}`, "error");
+  } finally {
+    setRefreshLoading(false);
   }
 }
 
@@ -260,7 +293,8 @@ function resetFilters() {
     const node = byId(id);
     if (node) node.value = "";
   });
-  applyFilters();
+  state.page = 1;
+  loadCallLogs();
 }
 
 function changePage(offset) {
@@ -272,27 +306,23 @@ function changePage(offset) {
   loadCallLogs();
 }
 
+function refreshCallLogs() {
+  loadCallLogs();
+}
+
 function showConfirm(title, message, onConfirm) {
-  const overlay = byId("confirm-overlay");
   const titleNode = byId("confirm-title");
   const messageNode = byId("confirm-message");
-  if (!overlay || !titleNode || !messageNode) return;
+  if (!titleNode || !messageNode) return;
   pendingConfirmFn = onConfirm;
   titleNode.textContent = title;
   messageNode.textContent = message;
-  overlay.classList.remove("hidden");
-  requestAnimationFrame(() => overlay.classList.add("is-open"));
+  openOverlay("confirm-overlay");
 }
 
 function closeConfirm() {
-  const overlay = byId("confirm-overlay");
-  if (!overlay) {
-    pendingConfirmFn = null;
-    return;
-  }
-  overlay.classList.remove("is-open");
-  setTimeout(() => overlay.classList.add("hidden"), 200);
   pendingConfirmFn = null;
+  closeOverlay("confirm-overlay");
 }
 
 function confirmAction() {
@@ -301,15 +331,10 @@ function confirmAction() {
   if (typeof confirmFn === "function") confirmFn();
 }
 
-function parseFilename(response) {
-  const disposition = response.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename="([^"]+)"/i);
-  return match && match[1] ? match[1] : "call-logs.csv";
-}
-
 async function exportCallLogs() {
   try {
-    const response = await fetch("/v1/admin/call-logs/export", {
+    const query = buildQueryString(false);
+    const response = await fetch(`/v1/admin/call-logs/export?${query}`, {
       headers: buildAuthHeaders(apiKey),
     });
     if (response.status === 401) {
@@ -359,57 +384,6 @@ function clearCallLogs() {
       showToast(`清空失败：${error.message}`, "error");
     }
   });
-}
-
-async function loadCallLogs() {
-  setStatus("加载中...");
-  setRefreshLoading(true);
-  const params = new URLSearchParams();
-  Object.entries(getFilters()).forEach(([key, value]) => {
-    if (value) params.set(key, value);
-  });
-
-  try {
-    const response = await fetch(`/v1/admin/call-logs?${params.toString()}`, {
-      headers: buildAuthHeaders(apiKey),
-    });
-    const data = await readJsonResponse(response);
-    if (response.status === 401) {
-      logout();
-      return;
-    }
-    if (!response.ok) {
-      throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
-    }
-    renderAll(data || {});
-    setStatus("");
-  } catch (error) {
-    console.error(error);
-    setStatus("加载失败");
-    showToast(`加载失败：${error.message}`, "error");
-  } finally {
-    setRefreshLoading(false);
-  }
-}
-
-function refreshCallLogs() {
-  loadCallLogs();
-}
-
-function showConfirm(title, message, onConfirm) {
-  const overlay = byId("confirm-overlay");
-  const titleNode = byId("confirm-title");
-  const messageNode = byId("confirm-message");
-  if (!overlay || !titleNode || !messageNode) return;
-  pendingConfirmFn = onConfirm;
-  titleNode.textContent = title;
-  messageNode.textContent = message;
-  openOverlay("confirm-overlay");
-}
-
-function closeConfirm() {
-  pendingConfirmFn = null;
-  closeOverlay("confirm-overlay");
 }
 
 async function init() {

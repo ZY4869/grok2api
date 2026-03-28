@@ -8,7 +8,7 @@ import asyncio
 import base64
 import hashlib
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from app.core.logger import logger
@@ -89,6 +89,7 @@ class DownloadService:
         token: str,
         media_type: str,
         filename: str,
+        metadata: dict[str, Any] | None = None,
     ) -> Tuple[Optional[Path], str]:
         async with _get_download_semaphore():
             cache_dir = self.store.cache_dir(media_type)
@@ -120,6 +121,7 @@ class DownloadService:
                     media_type,
                     safe_name,
                     payload,
+                    metadata=metadata,
                 )
 
                 mime = response.headers.get(
@@ -141,8 +143,17 @@ class DownloadService:
                 path_or_url, preserve_absolute=True
             )
             filename = self.store.build_source_filename(path_or_url, media_type)
+            origin_kind = "localized_thumbnail" if asset_type == "thumbnail" else "localized_video"
             cache_path, _ = await self._download_to_cache(
-                request_target, token, media_type, filename
+                request_target,
+                token,
+                media_type,
+                filename,
+                metadata={
+                    "token": token,
+                    "source_url": asset_url,
+                    "origin_kind": origin_kind,
+                },
             )
             local_url = self.store.build_public_url(media_type, cache_path.name)
             logger.info(
@@ -179,6 +190,11 @@ class DownloadService:
                 token,
                 media_type,
                 filename,
+                metadata={
+                    "token": token,
+                    "source_url": asset_url,
+                    "origin_kind": "localized_image",
+                },
             )
             local_url = self.store.build_public_url(media_type, cache_path.name)
             logger.info(
@@ -325,20 +341,24 @@ class DownloadService:
                 async with _file_lock("cache_cleanup", timeout=5):
                     limit_mb = get_config("cache.limit_mb")
                     total_size = 0
-                    all_files: List[Tuple[Path, float, int]] = []
+                    all_files: List[Tuple[Path, float, int, str]] = []
 
                     for d in [self.store.image_dir, self.store.video_dir]:
                         if d.exists():
+                            media_type = "video" if d == self.store.video_dir else "image"
+                            allowed_exts = self.store.allowed_exts(media_type)
                             for f in d.glob("*"):
-                                if f.is_file():
-                                    try:
-                                        stat = f.stat()
-                                        total_size += stat.st_size
-                                        all_files.append(
-                                            (f, stat.st_mtime, stat.st_size)
-                                        )
-                                    except Exception:
-                                        pass
+                                if not f.is_file() or f.suffix.lower() not in allowed_exts:
+                                    continue
+                                try:
+                                    stat = f.stat()
+                                    total_size += stat.st_size
+                                    meta_path = self.store.metadata_path(media_type, f.name)
+                                    if meta_path.exists():
+                                        total_size += meta_path.stat().st_size
+                                    all_files.append((f, stat.st_mtime, stat.st_size, media_type))
+                                except Exception:
+                                    pass
                     current_mb = total_size / 1024 / 1024
 
                     if current_mb <= limit_mb:
@@ -353,12 +373,14 @@ class DownloadService:
                     deleted_size = 0
                     target_mb = limit_mb * 0.8
 
-                    for f, _, size in all_files:
+                    for f, _, size, media_type in all_files:
                         try:
-                            f.unlink()
+                            meta_path = self.store.metadata_path(media_type, f.name)
+                            meta_size = meta_path.stat().st_size if meta_path.exists() else 0
+                            self.store.delete_asset_sync(media_type, f.name)
                             deleted_count += 1
-                            deleted_size += size
-                            total_size -= size
+                            deleted_size += size + meta_size
+                            total_size -= size + meta_size
                             if (total_size / 1024 / 1024) <= target_mb:
                                 break
                         except Exception:

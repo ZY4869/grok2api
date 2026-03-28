@@ -1,6 +1,8 @@
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from app.core.auth import verify_app_key
 from app.core.batch import create_task, expire_task
@@ -185,6 +187,33 @@ async def list_local(
         cache_service = CacheService()
         result = cache_service.list_files(cache_type, page, page_size)
         return {"status": "success", **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cache/export", dependencies=[Depends(verify_app_key)])
+async def export_local_cache(
+    cache_type: str = "image",
+    type_: str = Query(default=None, alias="type"),
+):
+    """导出本地缓存资产列表 CSV。"""
+    from app.services.grok.utils.cache import CacheService
+
+    try:
+        if type_:
+            cache_type = type_
+        normalized_type = str(cache_type or "image").strip().lower()
+        if normalized_type not in {"image", "video"}:
+            raise HTTPException(status_code=400, detail="Only image or video cache can be exported")
+        payload = CacheService().export_csv(normalized_type)
+        filename = f"cache-{normalized_type}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+        return Response(
+            content=payload,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -442,4 +471,3 @@ async def load_cache_async(data: dict):
         "task_id": task.id,
         "total": len(selected_tokens),
     }
-

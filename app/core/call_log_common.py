@@ -64,6 +64,7 @@ class CallLogFilters:
     api_type: str = ""
     model: str = ""
     account_keyword: str = ""
+    account_tokens: tuple[str, ...] = ()
     date_from: int = 0
     date_to: int = 0
     page: int = 1
@@ -72,6 +73,14 @@ class CallLogFilters:
 
 def build_call_log_filters(filters: dict[str, Any] | None = None) -> CallLogFilters:
     payload = dict(filters or {})
+    account_tokens = payload.get("account_tokens") or []
+    if not isinstance(account_tokens, (list, tuple, set)):
+        account_tokens = []
+    normalized_tokens: list[str] = []
+    for token in account_tokens:
+        value = str(token or "").replace("sso=", "").strip()
+        if value and value not in normalized_tokens:
+            normalized_tokens.append(value)
     page = max(1, coerce_int(payload.get("page"), 1))
     page_size = coerce_int(payload.get("page_size"), DEFAULT_CALL_LOG_PAGE_SIZE)
     if page_size <= 0:
@@ -82,6 +91,7 @@ def build_call_log_filters(filters: dict[str, Any] | None = None) -> CallLogFilt
         api_type=str(payload.get("api_type") or "").strip(),
         model=str(payload.get("model") or "").strip(),
         account_keyword=str(payload.get("account_keyword") or "").strip(),
+        account_tokens=tuple(normalized_tokens),
         date_from=max(0, coerce_int(payload.get("date_from"), 0)),
         date_to=max(0, coerce_int(payload.get("date_to"), 0)),
         page=page,
@@ -94,6 +104,8 @@ def build_call_log_response(
     items: list[dict[str, Any]],
     summary: dict[str, Any],
     accounts: list[dict[str, Any]],
+    account_stats: dict[str, Any] | None = None,
+    quick_image_limit_stats: dict[str, Any] | None = None,
     page: int,
     page_size: int,
     migration_status: dict[str, Any] | None = None,
@@ -111,6 +123,19 @@ def build_call_log_response(
             "unique_accounts": max(0, coerce_int(summary.get("unique_accounts"), 0)),
         },
         "accounts": accounts,
+        "account_stats": account_stats
+        or {
+            "total_accounts": 0,
+            "available_accounts": 0,
+            "limit_accounts": 0,
+            "called_accounts": 0,
+        },
+        "quick_image_limit_stats": quick_image_limit_stats
+        or {
+            "total_hits": 0,
+            "unique_accounts": 0,
+            "items": [],
+        },
         "pagination": {
             "page": current_page,
             "page_size": page_size,
@@ -124,4 +149,3 @@ def build_call_log_response(
             "migrated_count": 0,
         },
     }
-

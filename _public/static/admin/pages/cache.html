@@ -22,6 +22,9 @@
           <h2 class="text-2xl font-semibold tracking-tight" data-i18n="cache.title">缓存管理</h2>
           <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="cache.subtitle">管理本地资源与在线资产缓存。</p>
         </div>
+        <button id="export-local-cache-btn" type="button" class="geist-button-outline text-xs px-3" onclick="exportCurrentLocalCache()">
+          导出当前列表
+        </button>
       </div>
 
       <div class="h-px bg-[var(--border)] my-6"></div>
@@ -118,11 +121,12 @@
               </div>
             </div>
             <div class="overflow-x-auto">
-              <table class="geist-table min-w-[600px]">
+              <table class="geist-table w-full">
                 <thead>
                   <tr>
                     <th class="w-10 text-center"></th>
                     <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
+                    <th class="w-56 text-left">生成账号</th>
                     <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
                     <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
                     <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
@@ -166,11 +170,12 @@
               </div>
             </div>
             <div class="overflow-x-auto">
-              <table class="geist-table min-w-[600px]">
+              <table class="geist-table w-full">
                 <thead>
                   <tr>
                     <th class="w-10 text-center"></th>
                     <th class="w-108 text-left" data-i18n="cache.tableFile">文件</th>
+                    <th class="w-56 text-left">生成账号</th>
                     <th class="w-32 text-left" data-i18n="cache.tableSize">大小</th>
                     <th class="w-48 text-left" data-i18n="cache.tableTime">时间</th>
                     <th class="w-24 text-center" data-i18n="cache.tableActions">操作</th>
