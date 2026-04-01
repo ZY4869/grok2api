@@ -103,6 +103,7 @@ docker compose up -d
 
 - Basic 账号：80 次 / 20h
 - Super 账号：140 次 / 2h
+- `ssoHeavy` 不再依赖共享本地 `quota`。文本请求按上游能力额度驱动，图片/视频可用性由上游真实额度与 429/probe 状态共同决定。
 
 <br>
 

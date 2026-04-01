@@ -25,7 +25,11 @@ from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.utils.download import DownloadService
 from app.services.grok.utils.process import _is_http2_error, _normalize_line, _with_idle_timeout
-from app.services.grok.utils.retry import rate_limited
+from app.services.grok.utils.retry import (
+    bad_request_upstream,
+    rate_limited,
+    summarize_upstream_body,
+)
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.media_post import MediaPostReverse
@@ -846,8 +850,16 @@ class VideoService:
 
         def _select_video_token(preferred: Optional[str] = None) -> Optional[str]:
             if preferred and preferred not in exhausted_tokens:
-                _, preferred_info = token_mgr.get_token_entry(preferred)
-                if preferred_info and preferred_info.is_available():
+                preferred_pool, preferred_info = token_mgr.get_token_entry(preferred)
+                if (
+                    preferred_info
+                    and preferred_pool
+                    and token_mgr.is_token_selectable(
+                        preferred_info,
+                        preferred_pool,
+                        model_id=model,
+                    )
+                ):
                     token_mgr.bind_token_context(preferred)
                     return preferred
 
@@ -858,6 +870,7 @@ class VideoService:
                 video_length=video_length,
                 pool_candidates=pool_candidates,
                 exclude=excluded,
+                model_id=model,
             )
             if not token_info:
                 return None
@@ -1176,6 +1189,23 @@ class VideoService:
                         return
                     except UpstreamException as e:
                         last_error = e
+                        if bad_request_upstream(e):
+                            result = await token_mgr.mark_bad_request_failed(
+                                current_token,
+                                status_code=400,
+                                reason="app_chat_bad_request",
+                                body_summary=summarize_upstream_body(e),
+                            )
+                            logger.warning(
+                                "Video stream token hit upstream 400, trying next token",
+                                extra={
+                                    "model": model,
+                                    "attempt": attempt + 1,
+                                    "token": f"{current_token[:10]}...",
+                                    "bad_request_action": result.get("action"),
+                                },
+                            )
+                            continue
                         if rate_limited(e):
                             if yielded:
                                 raise
@@ -1232,6 +1262,23 @@ class VideoService:
                 return result
             except UpstreamException as e:
                 last_error = e
+                if bad_request_upstream(e):
+                    result = await token_mgr.mark_bad_request_failed(
+                        current_token,
+                        status_code=400,
+                        reason="app_chat_bad_request",
+                        body_summary=summarize_upstream_body(e),
+                    )
+                    logger.warning(
+                        "Video token hit upstream 400, trying next token",
+                        extra={
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "token": f"{current_token[:10]}...",
+                            "bad_request_action": result.get("action"),
+                        },
+                    )
+                    continue
                 if rate_limited(e):
                     resolution_result = await resolve_rate_limit_hit(
                         token_mgr,

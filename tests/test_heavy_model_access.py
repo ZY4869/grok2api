@@ -70,13 +70,13 @@ class TokenManagerHeavyModelTests(unittest.TestCase):
             "no_heavy_pool_tokens",
         )
 
-    def test_has_available_token_for_heavy_requires_available_heavy_pool_token(self):
+    def test_has_available_token_for_heavy_ignores_local_quota_field(self):
         mgr = _build_manager(
             heavy_tokens=[_token("token-heavy", quota=0)]
         )
 
         self.assertTrue(mgr.has_entitled_token_for_model(HEAVY_MODEL_ID))
-        self.assertFalse(mgr.has_available_token_for_model(HEAVY_MODEL_ID))
+        self.assertTrue(mgr.has_available_token_for_model(HEAVY_MODEL_ID))
 
 
 class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):

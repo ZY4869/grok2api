@@ -103,6 +103,7 @@ docker compose up -d
 
 - Basic account: 80 requests / 20h
 - Super account: 140 requests / 2h
+- `ssoHeavy` no longer relies on the shared local `quota` field. Text requests follow upstream capability limits, and image/video availability is driven by upstream real quota plus 429/probe state.
 
 <br>
 

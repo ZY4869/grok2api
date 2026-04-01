@@ -4,9 +4,16 @@ from unittest.mock import AsyncMock, patch
 import orjson
 
 from app.services.grok.services.chat import CollectProcessor, GrokChatService, StreamProcessor
+from app.services.grok.services.image import ImageWSStreamProcessor
+from app.services.grok.services.image_edit import ImageCollectProcessor
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
-from app.services.grok.utils.process import _collect_image_references
+from app.services.grok.utils.process import (
+    IMAGE_STAGE_FINAL,
+    IMAGE_STAGE_PREVIEW,
+    _collect_image_references,
+    _filter_image_references,
+)
 from app.services.reverse.app_chat import (
     APP_CHAT_REQUEST_LEGACY_MODEL,
     APP_CHAT_REQUEST_MODE_ID,
@@ -32,6 +39,7 @@ def _chat_config(key, default=None):
     values = {
         "app.filter_tags": [],
         "chat.stream_timeout": 1,
+        "image.stream_timeout": 1,
     }
     return values.get(key, default)
 
@@ -213,7 +221,7 @@ class ImageReferenceParsingTests(unittest.TestCase):
             {ref.url for ref in refs},
             {
                 "https://cdn.example.com/generated.png",
-                "/generated/edited-asset",
+                "https://assets.grok.com/generated/edited-asset",
             },
         )
         self.assertEqual(
@@ -235,16 +243,22 @@ class ImageReferenceParsingTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual({ref.source_shape for ref in refs}, {"streaming_image_generation"})
         self.assertEqual(
-            {ref.url for ref in refs},
             {
-                "https://assets.grok.com/users/u/generated/task-part-0/image.jpg",
-                "https://assets.grok.com/users/u/generated/task/image.jpg",
+                ref.url: ref.stage
+                for ref in refs
+            },
+            {
+                "https://assets.grok.com/users/u/generated/task-part-0/image.jpg": IMAGE_STAGE_PREVIEW,
+                "https://assets.grok.com/users/u/generated/task/image.jpg": IMAGE_STAGE_FINAL,
             },
         )
+
+        filtered = _filter_image_references(refs, include_preview=False)
         self.assertEqual(
-            {ref.source_shape for ref in refs},
-            {"streaming_image_generation"},
+            [ref.url for ref in filtered],
+            ["https://assets.grok.com/users/u/generated/task/image.jpg"],
         )
 
     def test_ignores_unknown_card_type_and_empty_json(self):
@@ -328,6 +342,149 @@ class ChatImageProcessorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "![task](https://assets.grok.com/users/u/generated/task/image.jpg)",
             content,
+        )
+
+    async def test_stream_processor_ignores_preview_and_emits_final_once(self):
+        processor = StreamProcessor("grok-auto", "token", show_think=False)
+
+        with patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            chunks = [
+                chunk
+                async for chunk in processor.process(
+                    _response_stream(
+                        {
+                            "result": {
+                                "response": {
+                                    "streamingImageGenerationResponse": {
+                                        "preview": {
+                                            "assetUrl": "https://assets.grok.com/users/u/generated/task-part-0/image.jpg"
+                                        },
+                                        "final": {
+                                            "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    )
+                )
+            ]
+
+        joined = "".join(chunks)
+        self.assertIn("![task](https://assets.grok.com/users/u/generated/task/image.jpg)", joined)
+        self.assertNotIn("task-part-0", joined)
+        self.assertEqual(joined.count("![task]("), 1)
+
+    async def test_collect_processor_ignores_preview_and_appends_final_once(self):
+        processor = CollectProcessor("grok-auto", "token")
+
+        with patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=_chat_config,
+        ), patch(
+            "app.services.grok.utils.download.DownloadService.render_image",
+            new=AsyncMock(side_effect=_render_image),
+        ):
+            result = await processor.process(
+                _response_stream(
+                    {
+                        "result": {
+                            "response": {
+                                "streamingImageGenerationResponse": {
+                                    "preview": {
+                                        "assetUrl": "https://assets.grok.com/users/u/generated/task-part-0/image.jpg"
+                                    },
+                                    "final": {
+                                        "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                                    },
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+
+        content = result["choices"][0]["message"]["content"]
+        self.assertIn("![task](https://assets.grok.com/users/u/generated/task/image.jpg)", content)
+        self.assertNotIn("task-part-0", content)
+        self.assertEqual(content.count("![task]("), 1)
+
+
+async def _image_item_stream(*items):
+    for item in items:
+        yield item
+
+
+class ImageGenerationProcessorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_ws_stream_partial_events_do_not_emit_preview_payloads(self):
+        processor = ImageWSStreamProcessor(
+            "grok-imagine-1.0",
+            "token",
+            n=1,
+            response_format="url",
+            size="1024x1024",
+            chat_format=False,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in processor.process(
+                _image_item_stream(
+                    {
+                        "type": "image",
+                        "image_id": "image-1",
+                        "stage": "preview",
+                        "progress": 42,
+                        "blob": "preview-blob",
+                    }
+                )
+            )
+        ]
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn('"type":"image_generation.partial_image"', chunks[0])
+        self.assertIn('"url":""', chunks[0])
+        self.assertNotIn("preview-blob", chunks[0])
+
+    async def test_image_edit_collect_ignores_preview_urls(self):
+        processor = ImageCollectProcessor("grok-imagine-1.0-edit", "token", response_format="url")
+
+        with patch(
+            "app.services.grok.services.image_edit.get_config",
+            side_effect=_chat_config,
+        ), patch.object(
+            ImageCollectProcessor,
+            "process_url",
+            new=AsyncMock(side_effect=lambda url, media_type="image": url),
+        ):
+            images = await processor.process(
+                _response_stream(
+                    {
+                        "result": {
+                            "response": {
+                                "streamingImageGenerationResponse": {
+                                    "preview": {
+                                        "assetUrl": "https://assets.grok.com/users/u/generated/task-part-0/image.jpg"
+                                    },
+                                    "final": {
+                                        "imageUrl": "https://assets.grok.com/users/u/generated/task/image.jpg"
+                                    },
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+
+        self.assertEqual(
+            images,
+            ["https://assets.grok.com/users/u/generated/task/image.jpg"],
         )
 
 

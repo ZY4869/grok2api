@@ -6,6 +6,7 @@ from typing import Optional
 from app.core.logger import logger
 from app.core.storage import get_storage, StorageError, RedisStorage
 from app.services.token.manager import get_token_manager
+from app.services.token.models import TokenStatus
 
 
 class TokenRefreshScheduler:
@@ -117,23 +118,36 @@ class AccountCheckScheduler:
 
                 logger.info("AccountCheck: starting alive check for all tokens...")
                 manager = await get_token_manager()
+                cleanup_result = await manager.cleanup_blacklisted_tokens()
 
                 alive_count = 0
                 expired_count = 0
                 for pool in manager.pools.values():
                     for token_info in pool.list():
+                        if token_info.status == TokenStatus.BLACKLISTED:
+                            continue
                         result = await manager.check_alive(token_info.token)
                         if result is True:
                             alive_count += 1
                         elif result is False:
                             expired_count += 1
 
-                logger.info(f"AccountCheck: completed - alive={alive_count}, expired={expired_count}")
+                logger.info(
+                    "AccountCheck: completed - alive=%s, expired=%s, blacklisted_deleted=%s",
+                    alive_count,
+                    expired_count,
+                    cleanup_result.get("deleted", 0),
+                )
 
                 if auto_clean and expired_count > 0:
                     removed = 0
                     for pool in manager.pools.values():
-                        to_remove = [t.token for t in pool.list() if t.alive is False or t.status.value == "expired"]
+                        to_remove = [
+                            t.token
+                            for t in pool.list()
+                            if t.status != TokenStatus.BLACKLISTED
+                            and (t.alive is False or t.status.value == "expired")
+                        ]
                         for token_str in to_remove:
                             await manager.remove(token_str)
                             removed += 1

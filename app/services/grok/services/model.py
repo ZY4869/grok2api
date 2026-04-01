@@ -13,6 +13,8 @@ BASIC_POOL_NAME = "ssoBasic"
 SUPER_POOL_NAME = "ssoSuper"
 HEAVY_POOL_NAME = "ssoHeavy"
 HEAVY_MODEL_ID = "grok-4-heavy"
+HIGH_TIER_POOL_CANDIDATES = [HEAVY_POOL_NAME, SUPER_POOL_NAME]
+DEFAULT_POOL_CANDIDATES = [HEAVY_POOL_NAME, SUPER_POOL_NAME, BASIC_POOL_NAME]
 
 
 class Tier(str, Enum):
@@ -173,10 +175,14 @@ class ModelService:
         """鎸変紭鍏堢骇杩斿洖鍙敤 Token 姹犲垪琛?"""
         if model_id == HEAVY_MODEL_ID:
             return [HEAVY_POOL_NAME]
+        if cls.is_dedicated_media_model(model_id):
+            return list(HIGH_TIER_POOL_CANDIDATES)
+        return list(DEFAULT_POOL_CANDIDATES)
+
+    @classmethod
+    def is_dedicated_media_model(cls, model_id: str) -> bool:
         model = cls.get(model_id)
-        if model and model.is_video:
-            return [SUPER_POOL_NAME, HEAVY_POOL_NAME]
-        return [BASIC_POOL_NAME, SUPER_POOL_NAME, HEAVY_POOL_NAME]
+        return bool(model and (model.is_image or model.is_image_edit or model.is_video))
 
 
 __all__ = [
@@ -184,5 +190,7 @@ __all__ = [
     "SUPER_POOL_NAME",
     "HEAVY_POOL_NAME",
     "HEAVY_MODEL_ID",
+    "HIGH_TIER_POOL_CANDIDATES",
+    "DEFAULT_POOL_CANDIDATES",
     "ModelService",
 ]

@@ -18,6 +18,9 @@ T = TypeVar("T")
 
 _LEGACY_IMAGE_KEYS = {"generatedImageUrls", "imageUrls", "imageURLs"}
 _STREAMING_IMAGE_KEYS = {"streamingImageGenerationResponse"}
+IMAGE_STAGE_PREVIEW = "preview"
+IMAGE_STAGE_FINAL = "final"
+IMAGE_STAGE_UNKNOWN = "unknown"
 _IMAGE_CHUNK_URL_KEYS = {
     "assetUrl",
     "asset_url",
@@ -39,6 +42,7 @@ class ImageReference:
     url: str
     source_shape: str
     card_type: str = ""
+    stage: str = IMAGE_STAGE_UNKNOWN
 
 
 def _is_http2_error(e: Exception) -> bool:
@@ -115,6 +119,7 @@ def _collect_image_chunk_urls(
     add_ref,
     card_type: str,
     source_shape: str = "card_image_chunk",
+    stage: str = IMAGE_STAGE_UNKNOWN,
 ) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -124,20 +129,22 @@ def _collect_image_chunk_urls(
                     add_ref=add_ref,
                     card_type=card_type,
                     source_shape=source_shape,
+                    stage=stage,
                 )
                 continue
             if key in _IMAGE_CHUNK_URL_KEYS:
                 if isinstance(item, list):
                     for url in item:
                         if isinstance(url, str):
-                            add_ref(url, source_shape, card_type)
+                            add_ref(url, source_shape, card_type, stage=stage)
                 elif isinstance(item, str):
-                    add_ref(item, source_shape, card_type)
+                    add_ref(item, source_shape, card_type, stage=stage)
             _collect_image_chunk_urls(
                 item,
                 add_ref=add_ref,
                 card_type=card_type,
                 source_shape=source_shape,
+                stage=stage,
             )
         return
 
@@ -148,11 +155,12 @@ def _collect_image_chunk_urls(
                 add_ref=add_ref,
                 card_type=card_type,
                 source_shape=source_shape,
+                stage=stage,
             )
         return
 
     if isinstance(value, str) and _looks_like_image_ref(value):
-        add_ref(value, source_shape, card_type)
+        add_ref(value, source_shape, card_type, stage=stage)
 
 
 def _collect_card_images(card: Any, *, add_ref) -> None:
@@ -184,18 +192,44 @@ def _collect_card_images(card: Any, *, add_ref) -> None:
 def _collect_image_references(obj: Any) -> List[ImageReference]:
     """Collect image references from both legacy and new app-chat response shapes."""
     refs: List[ImageReference] = []
-    seen: set[str] = set()
+    seen_index: dict[str, int] = {}
 
-    def add_ref(url: str, source_shape: str, card_type: str = "") -> None:
+    def _stage_rank(stage: str) -> int:
+        normalized = stage or IMAGE_STAGE_UNKNOWN
+        if normalized == IMAGE_STAGE_PREVIEW:
+            return 0
+        if normalized == IMAGE_STAGE_UNKNOWN:
+            return 1
+        return 2
+
+    def add_ref(
+        url: str,
+        source_shape: str,
+        card_type: str = "",
+        *,
+        stage: str = IMAGE_STAGE_UNKNOWN,
+    ) -> None:
         text = _normalize_grok_image_url((url or "").strip())
-        if not _looks_like_image_ref(text) or text in seen:
+        if not _looks_like_image_ref(text):
             return
-        seen.add(text)
+        existing_index = seen_index.get(text)
+        if existing_index is not None:
+            existing = refs[existing_index]
+            if _stage_rank(stage) > _stage_rank(existing.stage):
+                refs[existing_index] = ImageReference(
+                    url=existing.url,
+                    source_shape=existing.source_shape,
+                    card_type=existing.card_type,
+                    stage=stage or IMAGE_STAGE_UNKNOWN,
+                )
+            return
+        seen_index[text] = len(refs)
         refs.append(
             ImageReference(
                 url=text,
                 source_shape=source_shape,
                 card_type=str(card_type or ""),
+                stage=stage or IMAGE_STAGE_UNKNOWN,
             )
         )
 
@@ -240,16 +274,53 @@ def _collect_image_references(obj: Any) -> List[ImageReference]:
             for item in value:
                 walk_cards(item)
 
+    def _collect_streaming_images(value: Any) -> None:
+        if not isinstance(value, dict):
+            _collect_image_chunk_urls(
+                value,
+                add_ref=add_ref,
+                card_type="streaming_image_generation",
+                source_shape="streaming_image_generation",
+                stage=IMAGE_STAGE_FINAL,
+            )
+            return
+
+        if "preview" in value:
+            _collect_image_chunk_urls(
+                value.get("preview"),
+                add_ref=add_ref,
+                card_type="streaming_image_generation",
+                source_shape="streaming_image_generation",
+                stage=IMAGE_STAGE_PREVIEW,
+            )
+        if "final" in value:
+            _collect_image_chunk_urls(
+                value.get("final"),
+                add_ref=add_ref,
+                card_type="streaming_image_generation",
+                source_shape="streaming_image_generation",
+                stage=IMAGE_STAGE_FINAL,
+            )
+
+        residual = {
+            key: item
+            for key, item in value.items()
+            if key not in {"preview", "final"}
+        }
+        if residual:
+            _collect_image_chunk_urls(
+                residual,
+                add_ref=add_ref,
+                card_type="streaming_image_generation",
+                source_shape="streaming_image_generation",
+                stage=IMAGE_STAGE_FINAL,
+            )
+
     def walk_streaming(value: Any) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
                 if key in _STREAMING_IMAGE_KEYS:
-                    _collect_image_chunk_urls(
-                        item,
-                        add_ref=add_ref,
-                        card_type="streaming_image_generation",
-                        source_shape="streaming_image_generation",
-                    )
+                    _collect_streaming_images(item)
                     continue
                 walk_streaming(item)
             return
@@ -263,9 +334,42 @@ def _collect_image_references(obj: Any) -> List[ImageReference]:
     return refs
 
 
-def _collect_images(obj: Any) -> List[str]:
+def _filter_image_references(
+    refs: List[ImageReference],
+    *,
+    include_preview: bool = True,
+    include_final: bool = True,
+    include_unknown: bool = True,
+) -> List[ImageReference]:
+    filtered: List[ImageReference] = []
+    for ref in refs:
+        stage = ref.stage or IMAGE_STAGE_UNKNOWN
+        if stage == IMAGE_STAGE_PREVIEW and not include_preview:
+            continue
+        if stage == IMAGE_STAGE_FINAL and not include_final:
+            continue
+        if stage == IMAGE_STAGE_UNKNOWN and not include_unknown:
+            continue
+        filtered.append(ref)
+    return filtered
+
+
+def _collect_images(
+    obj: Any,
+    *,
+    include_preview: bool = True,
+    include_final: bool = True,
+    include_unknown: bool = True,
+) -> List[str]:
     """Backward-compatible image URL collector."""
-    return [ref.url for ref in _collect_image_references(obj)]
+    refs = _collect_image_references(obj)
+    refs = _filter_image_references(
+        refs,
+        include_preview=include_preview,
+        include_final=include_final,
+        include_unknown=include_unknown,
+    )
+    return [ref.url for ref in refs]
 
 
 def _collect_image_shapes(obj: Any) -> List[str]:
@@ -342,10 +446,14 @@ class BaseProcessor:
 
 __all__ = [
     "BaseProcessor",
+    "IMAGE_STAGE_FINAL",
+    "IMAGE_STAGE_PREVIEW",
+    "IMAGE_STAGE_UNKNOWN",
     "ImageReference",
     "_collect_image_references",
     "_collect_image_shapes",
     "_collect_images",
+    "_filter_image_references",
     "_is_http2_error",
     "_normalize_line",
     "_with_idle_timeout",

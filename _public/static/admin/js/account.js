@@ -126,6 +126,25 @@ function createIconButton({ title, className, svg, onClick }) {
   return button;
 }
 
+function isUpstreamQuotaPool(pool) {
+  return pool === "ssoHeavy";
+}
+
+function getLocalQuotaDisplay(item) {
+  if (isUpstreamQuotaPool(item && item.pool)) {
+    return {
+      text: "上游",
+      title: "ssoHeavy 使用上游能力额度管理",
+      muted: true,
+    };
+  }
+  return {
+    text: String((item && item.quota) || 0),
+    title: "",
+    muted: false,
+  };
+}
+
 function getRealQuotaHelper() {
   return window.AccountRealQuota &&
     typeof window.AccountRealQuota.getRealQuotaState === "function"
@@ -287,6 +306,12 @@ function getAliveDisplay(item) {
   }
   if (item.status === "disabled") {
     return '<span class="text-gray-400" title="已禁用">&#9724;</span>';
+  }
+  if (item.status === "blacklisted") {
+    const title = item.delete_after_at
+      ? `blacklisted until ${formatTime(item.delete_after_at)}`
+      : "blacklisted";
+    return `<span class="text-red-700 font-bold" title="${escapeHtml(title)}">&#9888;</span>`;
   }
   if (item.alive === true) {
     return '<span class="text-green-600 font-bold" title="可用">&#10003;</span>';
@@ -541,11 +566,19 @@ function renderTable() {
 
     const quotaCell = document.createElement("td");
     quotaCell.className = "text-center font-mono text-xs";
-    quotaCell.textContent = String(item.quota || 0);
+    const quotaState = getLocalQuotaDisplay(item);
+    quotaCell.textContent = quotaState.text;
+    if (quotaState.title) {
+      quotaCell.title = quotaState.title;
+    }
+    if (quotaState.muted) {
+      quotaCell.classList.add("text-gray-400");
+    }
 
     const lastCheckCell = document.createElement("td");
     lastCheckCell.className = "text-center text-xs text-gray-500 account-last-check-cell";
     lastCheckCell.textContent = formatTime(item.last_alive_check_at);
+    const realQuotaCell = createRealQuotaCell(item);
 
     const actionCell = document.createElement("td");
     actionCell.className = "text-center";
@@ -595,6 +628,16 @@ function renderTable() {
         onClick: () => toggleSingleNSFW(index),
       })
     );
+    if (item.status === "blacklisted") {
+      actionGroup.appendChild(
+        createIconButton({
+          title: "鎭㈠",
+          className: "p-1 rounded text-gray-400 hover:text-green-600",
+          svg: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"></path><polyline points="3 3 3 9 9 9"></polyline></svg>',
+          onClick: () => recoverSingle(item.token),
+        })
+      );
+    }
 
     actionGroup.appendChild(
       createIconButton({
@@ -628,6 +671,7 @@ function renderTable() {
     row.appendChild(aliveCell);
     row.appendChild(nsfwCell);
     row.appendChild(quotaCell);
+    row.appendChild(realQuotaCell);
     row.appendChild(lastCheckCell);
     row.appendChild(actionCell);
     fragment.appendChild(row);
@@ -681,6 +725,11 @@ async function loadAccountData() {
             typeof tokenInfo.last_rate_limit_probe_result === "object"
               ? tokenInfo.last_rate_limit_probe_result
               : null,
+          bad_request_fail_count: tokenInfo.bad_request_fail_count || 0,
+          last_bad_request_at: tokenInfo.last_bad_request_at || 0,
+          bad_request_cooling_until: tokenInfo.bad_request_cooling_until || 0,
+          blacklisted_at: tokenInfo.blacklisted_at || 0,
+          delete_after_at: tokenInfo.delete_after_at || 0,
           tags: Array.isArray(tokenInfo.tags) ? tokenInfo.tags : [],
           last_alive_check_at: tokenInfo.last_alive_check_at,
           _selected: false,
@@ -733,6 +782,24 @@ async function requestDeleteTokens(tokens) {
   return data;
 }
 
+async function requestRecoverTokens(tokens) {
+  const response = await fetch("/v1/admin/tokens/recover", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(apiKey),
+    },
+    body: JSON.stringify({ tokens }),
+  });
+  const data = await readJsonResponse(response);
+
+  if (!response.ok || !data || data.status !== "success") {
+    throw new Error((data && (data.detail || data.message)) || `HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
 async function deleteTokens(tokens, successMessage) {
   const uniqueTokens = Array.from(
     new Set(
@@ -756,6 +823,21 @@ async function deleteTokens(tokens, successMessage) {
     console.error(error);
     showToast(`删除失败：${error.message}`, "error");
     return false;
+  }
+}
+
+async function recoverSingle(token) {
+  if (!token) return;
+  try {
+    const result = await requestRecoverTokens([token]);
+    await loadAccountData();
+    showToast(
+      result.recovered > 0 ? "榛戝悕鍗曡处鍙峰凡鎭㈠" : "褰撳墠璐﹀彿鏃犻渶鎭㈠",
+      result.recovered > 0 ? "success" : "info"
+    );
+  } catch (error) {
+    console.error(error);
+    showToast(`鎭㈠澶辫触锛?{error.message}`, "error");
   }
 }
 
@@ -838,6 +920,10 @@ function batchDeleteSelected() {
 async function toggleSingleStatus(index) {
   const item = allTokens[index];
   if (!item) return;
+  if (item.status === "blacklisted") {
+    await recoverSingle(item.token);
+    return;
+  }
 
   const nextStatus = item.status === "disabled" ? "active" : "disabled";
   const ok = await updateTokenStatus([item], nextStatus);
@@ -1127,7 +1213,9 @@ function confirmAction() {
 }
 
 function cleanExpired() {
-  const expired = allTokens.filter((item) => item.alive === false || item.status === "expired");
+  const expired = allTokens.filter(
+    (item) => item.status !== "blacklisted" && (item.alive === false || item.status === "expired")
+  );
   if (expired.length === 0) {
     showToast("没有失效账号需要清理", "info");
     return;
@@ -1345,7 +1433,9 @@ async function submitImport() {
 }
 
 function cleanExpired() {
-  const expired = allTokens.filter((item) => item.alive === false || item.status === "expired");
+  const expired = allTokens.filter(
+    (item) => item.status !== "blacklisted" && (item.alive === false || item.status === "expired")
+  );
   if (expired.length === 0) {
     showToast("没有失效账号需要清理", "info");
     return;
@@ -1387,4 +1477,13 @@ function closeEditModal() {
   closeOverlay("edit-modal");
 }
 
-window.addEventListener("load", init);
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("load", init);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    getLocalQuotaDisplay,
+    isUpstreamQuotaPool,
+  };
+}

@@ -1,6 +1,7 @@
 """Token 管理服务"""
 
 import asyncio
+import random
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -14,6 +15,12 @@ from app.services.token.models import (
     TokenStatus,
     BASIC__DEFAULT_QUOTA,
     SUPER_DEFAULT_QUOTA,
+)
+from app.services.token.heavy_pool import (
+    capability_requirement_for_model,
+    capability_wait_active,
+    default_local_quota_for_pool,
+    is_upstream_quota_pool,
 )
 from app.core.storage import get_storage, LocalStorage
 from app.core.config import get_config
@@ -38,12 +45,18 @@ DEFAULT_RELOAD_INTERVAL_SEC = 30
 DEFAULT_SAVE_DELAY_MS = 500
 DEFAULT_USAGE_FLUSH_INTERVAL_SEC = 5
 DEFAULT_SOFT_COOLING_SECONDS = 30
+DEFAULT_BAD_REQUEST_COOLING_SECONDS = 1800
+DEFAULT_BAD_REQUEST_BLACKLIST_THRESHOLD = 2
+DEFAULT_BLACKLIST_RETENTION_DAYS = 3
 SUPER_WINDOW_THRESHOLD_SECONDS = 14400
 
+
 def _default_quota_for_pool(pool_name: str) -> int:
-    if pool_name in {SUPER_POOL_NAME, HEAVY_POOL_NAME}:
-        return SUPER_DEFAULT_QUOTA
-    return BASIC__DEFAULT_QUOTA
+    return default_local_quota_for_pool(
+        pool_name,
+        basic_default=BASIC__DEFAULT_QUOTA,
+        super_default=SUPER_DEFAULT_QUOTA,
+    )
 
 
 class TokenManager:
@@ -67,6 +80,157 @@ class TokenManager:
         self._last_usage_flush_at = 0.0
         self._dirty_tokens = {}
         self._dirty_deletes = set()
+
+    def _normalize_loaded_token(self, token: TokenInfo, pool_name: str) -> None:
+        if not is_upstream_quota_pool(pool_name):
+            return
+        if token.status == TokenStatus.COOLING:
+            token.recover_active()
+        token.cooling_until = None
+        token.clear_soft_rate_limit()
+
+    def _uses_upstream_capability_quota(self, pool_name: str) -> bool:
+        return is_upstream_quota_pool(pool_name)
+
+    def _capability_requirement_for_model(self, model_id: Optional[str]):
+        return capability_requirement_for_model(model_id)
+
+    def _bad_request_cooling_ms(self) -> int:
+        value = get_config(
+            "token.bad_request_cooling_seconds",
+            DEFAULT_BAD_REQUEST_COOLING_SECONDS,
+        )
+        try:
+            seconds = max(0.0, float(value))
+        except Exception:
+            seconds = float(DEFAULT_BAD_REQUEST_COOLING_SECONDS)
+        return int(seconds * 1000)
+
+    def _bad_request_blacklist_threshold(self) -> int:
+        value = get_config(
+            "token.bad_request_blacklist_threshold",
+            DEFAULT_BAD_REQUEST_BLACKLIST_THRESHOLD,
+        )
+        try:
+            threshold = int(value)
+        except Exception:
+            threshold = DEFAULT_BAD_REQUEST_BLACKLIST_THRESHOLD
+        return max(1, threshold)
+
+    def _blacklist_retention_ms(self) -> int:
+        value = get_config(
+            "token.blacklist_retention_days",
+            DEFAULT_BLACKLIST_RETENTION_DAYS,
+        )
+        try:
+            days = max(0.0, float(value))
+        except Exception:
+            days = float(DEFAULT_BLACKLIST_RETENTION_DAYS)
+        return int(days * 24 * 3600 * 1000)
+
+    def _is_token_runtime_blocked(self, token: TokenInfo) -> bool:
+        if token.alive is False:
+            return True
+        if token.status == TokenStatus.BLACKLISTED:
+            return True
+        if token.is_bad_request_cooled(self._now_ms()):
+            return True
+        return False
+
+    def _is_upstream_quota_token_available(
+        self,
+        token: TokenInfo,
+        *,
+        model_id: Optional[str] = None,
+    ) -> bool:
+        if self._is_token_runtime_blocked(token):
+            return False
+        if token.status != TokenStatus.ACTIVE:
+            return False
+        if token.is_soft_rate_limited():
+            return False
+        requirement = self._capability_requirement_for_model(model_id)
+        rate_limits = token.real_quota.get("rate_limits") if isinstance(token.real_quota, dict) else None
+        if capability_wait_active(rate_limits, requirement, now_ms=self._now_ms()):
+            return False
+        return True
+
+    def is_token_selectable(
+        self,
+        token: Optional[TokenInfo],
+        pool_name: str,
+        *,
+        model_id: Optional[str] = None,
+    ) -> bool:
+        if not token:
+            return False
+        if self._is_token_runtime_blocked(token):
+            return False
+        if self._uses_upstream_capability_quota(pool_name):
+            return self._is_upstream_quota_token_available(token, model_id=model_id)
+        return token.is_available(consumed_mode=self._is_consumed_mode())
+
+    def _select_upstream_quota_token(
+        self,
+        pool: TokenPool,
+        *,
+        exclude: set = None,
+        prefer_tags: Optional[Set[str]] = None,
+        model_id: Optional[str] = None,
+    ) -> Optional[TokenInfo]:
+        available = [
+            token
+            for token in pool.list()
+            if self.is_token_selectable(
+                token,
+                pool.name,
+                model_id=model_id,
+            )
+            and (not exclude or token.token not in exclude)
+        ]
+        if not available:
+            return None
+
+        if prefer_tags:
+            preferred = [t for t in available if prefer_tags.issubset(set(t.tags or []))]
+            if preferred:
+                available = preferred
+
+        if self._is_consumed_mode():
+            min_consumed = min(token.consumed for token in available)
+            candidates = [token for token in available if token.consumed == min_consumed]
+            return candidates[0] if len(candidates) == 1 else random.choice(candidates)
+
+        min_use_count = min(int(token.use_count or 0) for token in available)
+        candidates = [token for token in available if int(token.use_count or 0) == min_use_count]
+        return candidates[0] if len(candidates) == 1 else random.choice(candidates)
+
+    def _store_capability_rate_limit_payload(
+        self,
+        token: TokenInfo,
+        slot: str,
+        payload: Optional[dict[str, Any]],
+        *,
+        checked_at: Optional[int] = None,
+    ) -> None:
+        if not isinstance(token.real_quota, dict):
+            token.real_quota = {}
+        rate_limits = token.real_quota.get("rate_limits")
+        if not isinstance(rate_limits, dict):
+            rate_limits = {}
+            token.real_quota["rate_limits"] = rate_limits
+
+        checked_ms = self._now_ms() if checked_at is None else int(checked_at)
+        entry = dict(payload or {})
+        entry["checkedAt"] = checked_ms
+        if "remaining_queries" in entry and "remainingQueries" not in entry:
+            entry["remainingQueries"] = entry.get("remaining_queries")
+        if "wait_time_seconds" in entry and "waitTimeSeconds" not in entry:
+            entry["waitTimeSeconds"] = entry.get("wait_time_seconds")
+        if entry.get("remainingQueries") is None and entry.get("remaining_queries") is None:
+            entry["remainingQueries"] = 0
+        rate_limits[slot] = entry
+        token.last_real_quota_check_at = checked_ms
 
     @classmethod
     async def get_instance(cls) -> "TokenManager":
@@ -114,11 +278,9 @@ class TokenManager:
                                 ):
                                     token_data["token"] = raw_token[4:]
                             token_info = TokenInfo(**token_data)
-                            if quota_missing and pool_name in {
-                                SUPER_POOL_NAME,
-                                HEAVY_POOL_NAME,
-                            }:
-                                token_info.quota = SUPER_DEFAULT_QUOTA
+                            if quota_missing:
+                                token_info.quota = _default_quota_for_pool(pool_name)
+                            self._normalize_loaded_token(token_info, pool_name)
                             pool.add(token_info)
                         except Exception as e:
                             logger.warning(
@@ -377,6 +539,7 @@ class TokenManager:
         self._save_task = asyncio.create_task(self._flush_loop())
 
     async def _flush_loop(self):
+        cancelled = False
         try:
             while True:
                 await asyncio.sleep(self._save_delay)
@@ -384,9 +547,12 @@ class TokenManager:
                     break
                 self._dirty = False
                 await self._save()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             self._save_task = None
-            if self._dirty:
+            if self._dirty and not cancelled:
                 self._schedule_save()
 
     def _select_token_info(
@@ -401,9 +567,22 @@ class TokenManager:
             logger.warning(f"Pool '{pool_name}' not found")
             return None
 
+        if self._uses_upstream_capability_quota(pool_name):
+            return self._select_upstream_quota_token(
+                pool,
+                exclude=exclude,
+                prefer_tags=prefer_tags,
+                model_id=model_id,
+            )
+
         return pool.select(
             exclude=exclude,
             prefer_tags=prefer_tags,
+            predicate=lambda token: self.is_token_selectable(
+                token,
+                pool_name,
+                model_id=model_id,
+            ),
         )
 
     def get_token(
@@ -504,14 +683,14 @@ class TokenManager:
         video_length: int = 6,
         pool_candidates: Optional[List[str]] = None,
         exclude: Optional[Set[str]] = None,
+        model_id: Optional[str] = None,
     ) -> Optional["TokenInfo"]:
         """
         根据视频需求智能选择 Token 池
 
         路由策略:
-        - 如果 resolution 是 "720p" 或 video_length > 6: 优先使用 "ssoSuper" 池
-        - 否则优先使用 "ssoBasic" 池
-        - 当提供 pool_candidates 时，按候选池顺序回退
+        - 当提供 pool_candidates 时，严格按传入顺序选号
+        - 未提供 pool_candidates 时，沿用分辨率/时长启发式作为默认顺序
 
         Args:
             resolution: 视频分辨率 ("480p" 或 "720p")
@@ -527,9 +706,6 @@ class TokenManager:
 
         if pool_candidates:
             ordered_pools = list(pool_candidates)
-            if primary_pool in ordered_pools:
-                ordered_pools.remove(primary_pool)
-                ordered_pools.insert(0, primary_pool)
         else:
             ordered_pools = [primary_pool]
             fallback_pool = BASIC_POOL_NAME if requires_super else SUPER_POOL_NAME
@@ -538,33 +714,76 @@ class TokenManager:
                     ordered_pools.append(pool_name)
 
         for idx, pool_name in enumerate(ordered_pools):
-            token_info = self.get_token_info(pool_name, exclude=exclude)
+            token_info = self.get_token_info(
+                pool_name,
+                exclude=exclude,
+                model_id=model_id,
+            )
             if token_info:
                 if idx == 0:
                     logger.info(
-                        f"Video token routing: resolution={resolution}, length={video_length}s -> "
-                        f"pool={pool_name} (token={token_info.token[:10]}...)"
+                        "video_token_routing_selected",
+                        extra={
+                            "model_id": model_id or "",
+                            "candidate_pools": ordered_pools,
+                            "selected_pool": pool_name,
+                            "fallback_from": "",
+                            "resolution": resolution,
+                            "video_length": video_length,
+                            "is_dedicated_media_model": True,
+                            "token": f"{token_info.token[:10]}...",
+                        },
                     )
                 else:
                     logger.info(
-                        f"Video token routing: fallback from {ordered_pools[0]} -> {pool_name} "
-                        f"(token={token_info.token[:10]}...)"
+                        "video_token_routing_selected",
+                        extra={
+                            "model_id": model_id or "",
+                            "candidate_pools": ordered_pools,
+                            "selected_pool": pool_name,
+                            "fallback_from": ordered_pools[0],
+                            "resolution": resolution,
+                            "video_length": video_length,
+                            "is_dedicated_media_model": True,
+                            "token": f"{token_info.token[:10]}...",
+                        },
                     )
                 return token_info
 
-            if idx == 0 and requires_super and pool_name == primary_pool:
+            if (
+                not pool_candidates
+                and idx == 0
+                and requires_super
+                and pool_name == primary_pool
+            ):
                 next_pool = ordered_pools[1] if len(ordered_pools) > 1 else None
                 if next_pool:
                     logger.warning(
-                        f"Video token routing: {primary_pool} pool has no available token for "
-                        f"resolution={resolution}, length={video_length}s. "
-                        f"Falling back to {next_pool} pool."
+                        "video_token_routing_fallback",
+                        extra={
+                            "model_id": model_id or "",
+                            "candidate_pools": ordered_pools,
+                            "selected_pool": "",
+                            "fallback_from": primary_pool,
+                            "resolution": resolution,
+                            "video_length": video_length,
+                            "is_dedicated_media_model": True,
+                            "next_pool": next_pool,
+                        },
                     )
 
         # 两个池都没有可用 token
         logger.warning(
-            f"Video token routing: no available token in any pool "
-            f"(resolution={resolution}, length={video_length}s)"
+            "video_token_routing_unavailable",
+            extra={
+                "model_id": model_id or "",
+                "candidate_pools": ordered_pools,
+                "selected_pool": "",
+                "fallback_from": "",
+                "resolution": resolution,
+                "video_length": video_length,
+                "is_dedicated_media_model": True,
+            },
         )
         return None
 
@@ -728,6 +947,22 @@ class TokenManager:
             token = pool.get(raw_token)
             if token:
                 self._bind_token_context(token, pool.name)
+                if self._uses_upstream_capability_quota(pool.name):
+                    token.record_success(is_usage=True)
+                    logger.info(
+                        "Heavy token usage recorded without local quota consumption",
+                        extra={
+                            "pool": pool.name,
+                            "skip_local_quota": True,
+                            "token": f"{raw_token[:10]}...",
+                            "effort": effort.value,
+                        },
+                    )
+                    self._track_token_change(token, pool.name, "usage")
+                    self._schedule_save()
+                    await log_call_success()
+                    return True
+
                 old_status = token.status
                 if self._is_consumed_mode():
                     consumed = token.consume_with_consumed(effort)
@@ -792,6 +1027,23 @@ class TokenManager:
                     new_quota = result.get("remainingQueries")
                 if new_quota is None:
                     return False
+
+                if self._uses_upstream_capability_quota(target_pool_name or ""):
+                    target_token.record_success(is_usage=is_usage)
+                    target_token.mark_synced()
+                    logger.info(
+                        "Heavy token sync skipped local quota overwrite",
+                        extra={
+                            "pool": target_pool_name,
+                            "skip_local_quota": True,
+                            "remaining_tokens": new_quota,
+                            "token": f"{raw_token[:10]}...",
+                        },
+                    )
+                    self._track_token_change(target_token, target_pool_name, "usage")
+                    self._schedule_save()
+                    return True
+
                 old_quota = target_token.quota
                 old_status = target_token.status
 
@@ -904,6 +1156,17 @@ class TokenManager:
             token = pool.get(raw_token)
             if token:
                 if status_code == 401:
+                    if token.status == TokenStatus.BLACKLISTED:
+                        logger.info(
+                            "Blacklisted token skipped auth-failure overwrite",
+                            extra={
+                                "pool": pool.name,
+                                "token": f"{raw_token[:10]}...",
+                                "status_code": status_code,
+                                "reason": reason,
+                            },
+                        )
+                        return True
                     if threshold is None:
                         threshold = get_config("token.fail_threshold", FAIL_THRESHOLD)
                         try:
@@ -932,6 +1195,120 @@ class TokenManager:
         logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
         return False
 
+    async def mark_bad_request_failed(
+        self,
+        token_str: str,
+        *,
+        status_code: int = 400,
+        reason: str = "",
+        body_summary: str = "",
+        trace_id: str = "",
+    ) -> dict[str, Any]:
+        raw_token = token_str.removeprefix("sso=")
+        pool_name, token = self.get_token_entry(raw_token)
+        if not token or not pool_name:
+            logger.warning(
+                "Bad-request token governance skipped because token was not found",
+                extra={
+                    "token": f"{raw_token[:10]}...",
+                    "status_code": status_code,
+                    "trace_id": trace_id,
+                },
+            )
+            return {"ok": False, "action": "not_found"}
+
+        now_ms = self._now_ms()
+        cooling_until = now_ms + self._bad_request_cooling_ms()
+        delete_after_at = now_ms + self._blacklist_retention_ms()
+        action = token.record_bad_request(
+            cooling_until_ms=cooling_until,
+            blacklist_threshold=self._bad_request_blacklist_threshold(),
+            delete_after_ms=delete_after_at,
+        )
+        if action != "blacklist":
+            delete_after_at = None
+
+        logger.warning(
+            "AppChat upstream 400 token governance updated",
+            extra={
+                "pool": pool_name,
+                "token_masked": f"{raw_token[:10]}...",
+                "status_code": status_code,
+                "bad_request_action": action,
+                "bad_request_fail_count": token.bad_request_fail_count,
+                "bad_request_cooling_until": token.bad_request_cooling_until,
+                "blacklisted_at": token.blacklisted_at,
+                "delete_after_at": token.delete_after_at,
+                "trace_id": trace_id,
+                "reason": reason,
+                "body_summary": body_summary,
+            },
+        )
+        self._track_token_change(token, pool_name, "state")
+        self._schedule_save()
+        return {
+            "ok": True,
+            "action": action,
+            "bad_request_fail_count": token.bad_request_fail_count,
+            "bad_request_cooling_until": token.bad_request_cooling_until,
+            "blacklisted_at": token.blacklisted_at,
+            "delete_after_at": token.delete_after_at,
+        }
+
+    async def recover_blacklisted(self, token_str: str) -> bool:
+        raw_token = token_str.removeprefix("sso=")
+        pool_name, token = self.get_token_entry(raw_token)
+        if not token or not pool_name:
+            logger.warning(f"Token {raw_token[:10]}...: not found for blacklist recovery")
+            return False
+        if token.status != TokenStatus.BLACKLISTED:
+            logger.info(
+                "Skip blacklist recovery because token is not blacklisted",
+                extra={
+                    "pool": pool_name,
+                    "token": f"{raw_token[:10]}...",
+                    "status": token.status.value,
+                },
+            )
+            return False
+
+        token.recover_from_blacklist()
+        self._track_token_change(token, pool_name, "state")
+        self._schedule_save()
+        logger.info(
+            "Blacklisted token recovered",
+            extra={"pool": pool_name, "token": f"{raw_token[:10]}..."},
+        )
+        return True
+
+    async def cleanup_blacklisted_tokens(self) -> dict[str, int]:
+        now_ms = self._now_ms()
+        checked = 0
+        deleted = 0
+
+        for pool in self.pools.values():
+            for token in list(pool.list()):
+                if token.status != TokenStatus.BLACKLISTED:
+                    continue
+                checked += 1
+                if token.delete_after_at is None or token.delete_after_at > now_ms:
+                    continue
+                if pool.remove(token.token):
+                    deleted += 1
+                    self._track_token_delete(token.token)
+                    logger.info(
+                        "Expired blacklisted token deleted",
+                        extra={
+                            "pool": pool.name,
+                            "token": f"{token.token[:10]}...",
+                            "delete_after_at": token.delete_after_at,
+                        },
+                    )
+
+        if deleted > 0:
+            await self._save(force=True)
+        return {"checked": checked, "deleted": deleted}
+
     async def mark_rate_limited(
         self,
         token_str: str,
@@ -958,6 +1335,10 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
+                slot = ""
+                if isinstance(probe_result, dict):
+                    slot = str(probe_result.get("slot") or "")
+
                 old_quota = token.quota
                 token.quota = 0
                 try:
@@ -969,6 +1350,38 @@ class TokenManager:
                 except (TypeError, ValueError):
                     wait_seconds = None
                 until_ms = None if not wait_seconds else now_ms + wait_seconds * 1000
+
+                if self._uses_upstream_capability_quota(pool.name) and slot:
+                    token.quota = old_quota
+                    self._store_capability_rate_limit_payload(
+                        token,
+                        slot,
+                        probe_result,
+                        checked_at=checked_at or now_ms,
+                    )
+                    token.cooling_until = None
+                    token.clear_soft_rate_limit()
+                    if token.status == TokenStatus.COOLING:
+                        token.recover_active()
+                    logger.warning(
+                        "Heavy token capability marked as rate limited without global cooling",
+                        extra={
+                            "pool": pool.name,
+                            "quota_slot": slot,
+                            "skip_local_quota": True,
+                            "wait_time_seconds": wait_seconds,
+                            "token": f"{raw_token[:10]}...",
+                        },
+                    )
+                    self._store_rate_limit_probe_result(
+                        token,
+                        probe_result,
+                        checked_at=checked_at or now_ms,
+                    )
+                    self._track_token_change(token, pool.name, "state")
+                    self._schedule_save()
+                    return True
+
                 token.enter_cooling(until_ms=until_ms)
                 self._store_rate_limit_probe_result(
                     token,
@@ -1018,6 +1431,18 @@ class TokenManager:
             if token:
                 token.alive = alive
                 token.last_alive_check_at = now_ms
+                if token.status == TokenStatus.BLACKLISTED:
+                    logger.info(
+                        "Blacklisted token health check updated without status mutation",
+                        extra={
+                            "pool": pool.name,
+                            "token": f"{raw_token[:10]}...",
+                            "alive": alive,
+                        },
+                    )
+                    self._track_token_change(token, pool.name, "state")
+                    self._schedule_save()
+                    return alive
                 if result == AliveStatus.EXPIRED:
                     token.record_fail(401, "health_check_expired")
                     logger.warning(f"Token {raw_token[:10]}...: health check → expired")

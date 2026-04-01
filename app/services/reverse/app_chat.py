@@ -46,6 +46,7 @@ _DEFAULT_TOOL_OVERRIDES = {
     "outlookCalendarSearch": False,
     "googleDriveSearch": False,
 }
+_ERROR_BODY_LOG_LIMIT = 240
 
 
 @dataclass
@@ -191,6 +192,13 @@ def _resolve_request_strategy(
     if use_mode_id:
         return APP_CHAT_REQUEST_MODE_ID
     return APP_CHAT_REQUEST_LEGACY_MODEL
+
+
+def _summarize_error_body(content: str, limit: int = _ERROR_BODY_LOG_LIMIT) -> str:
+    text = str(content or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
 
 
 class AppChatReverse:
@@ -418,18 +426,29 @@ class AppChatReverse:
                         content = await response.text()
                     except Exception:
                         pass
+                    body_excerpt = _summarize_error_body(content)
 
                     logger.debug(
                         "AppChatReverse: Chat failed response body: %s",
-                        content,
+                        body_excerpt,
                     )
                     logger.error(
                         f"AppChatReverse: Chat failed, {response.status_code}",
-                        extra={"error_type": "UpstreamException"},
+                        extra={
+                            "error_type": "UpstreamException",
+                            "status_code": response.status_code,
+                            "body_excerpt": body_excerpt,
+                            "body_size": len(content or ""),
+                        },
                     )
                     raise UpstreamException(
                         message=f"AppChatReverse: Chat failed, {response.status_code}",
-                        details={"status": response.status_code, "body": content},
+                        details={
+                            "status": response.status_code,
+                            "body": body_excerpt,
+                            "body_excerpt": body_excerpt,
+                            "body_size": len(content or ""),
+                        },
                     )
 
                 return response

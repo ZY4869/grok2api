@@ -24,12 +24,17 @@ from app.core.logger import logger
 from app.services.grok.utils.process import (
     BaseProcessor,
     _is_http2_error,
+    _filter_image_references,
     _collect_image_references,
     _normalize_line,
     _with_idle_timeout,
 )
 from app.services.grok.utils.upload import UploadService
-from app.services.grok.utils.retry import rate_limited
+from app.services.grok.utils.retry import (
+    bad_request_upstream,
+    rate_limited,
+    summarize_upstream_body,
+)
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.services.chat import GrokChatService
 from app.services.grok.services.video import VideoService
@@ -204,6 +209,23 @@ class ImageEditService:
                         return
                     except UpstreamException as e:
                         last_error = e
+                        if bad_request_upstream(e):
+                            result = await token_mgr.mark_bad_request_failed(
+                                current_token,
+                                status_code=400,
+                                reason="app_chat_bad_request",
+                                body_summary=summarize_upstream_body(e),
+                            )
+                            logger.warning(
+                                "Image edit stream token hit upstream 400, trying next token",
+                                extra={
+                                    "model": model_info.model_id,
+                                    "attempt": attempt + 1,
+                                    "token": f"{current_token[:10]}...",
+                                    "bad_request_action": result.get("action"),
+                                },
+                            )
+                            continue
                         if quota_requirement and _should_probe_image_limit(e):
                             if await confirm_quota_exhausted(
                                 token_mgr,
@@ -309,6 +331,23 @@ class ImageEditService:
                 return ImageEditResult(stream=False, data=images_out)
             except UpstreamException as e:
                 last_error = e
+                if bad_request_upstream(e):
+                    result = await token_mgr.mark_bad_request_failed(
+                        current_token,
+                        status_code=400,
+                        reason="app_chat_bad_request",
+                        body_summary=summarize_upstream_body(e),
+                    )
+                    logger.warning(
+                        "Image edit token hit upstream 400, trying next token",
+                        extra={
+                            "model": model_info.model_id,
+                            "attempt": attempt + 1,
+                            "token": f"{current_token[:10]}...",
+                            "bad_request_action": result.get("action"),
+                        },
+                    )
+                    continue
                 if quota_requirement and _should_probe_image_limit(e):
                     if await confirm_quota_exhausted(
                         token_mgr,
@@ -542,6 +581,8 @@ class ImageEditService:
                 )
             except UpstreamException as e:
                 last_error = e
+                if bad_request_upstream(e):
+                    raise
                 if rate_limited(e):
                     raise
                 if saw_valid_chunk:
@@ -625,6 +666,8 @@ class ImageEditService:
                     )
                 except UpstreamException as e:
                     last_error = e
+                    if bad_request_upstream(e):
+                        raise
                     if rate_limited(e):
                         raise
                     logger.warning(
@@ -754,8 +797,11 @@ class ImageStreamProcessor(BaseProcessor):
                 # Image generation progress — also extract embedded URLs
                 if img := resp.get("streamingImageGenerationResponse"):
                     # Check for image URLs inside the streaming event
-                    streaming_refs = _collect_image_references(
-                        {"streamingImageGenerationResponse": img}
+                    streaming_refs = _filter_image_references(
+                        _collect_image_references(
+                            {"streamingImageGenerationResponse": img}
+                        ),
+                        include_preview=False,
                     )
                     if streaming_refs:
                         logger.debug(
@@ -794,7 +840,10 @@ class ImageStreamProcessor(BaseProcessor):
                             )
                     continue
 
-                refs = _collect_image_references(resp)
+                refs = _filter_image_references(
+                    _collect_image_references(resp),
+                    include_preview=False,
+                )
                 if refs:
                     logger.debug(
                         "Image edit stream parsed upstream images",
@@ -957,7 +1006,10 @@ class ImageCollectProcessor(BaseProcessor):
 
                 resp = data.get("result", {}).get("response", {})
 
-                refs = _collect_image_references(resp)
+                refs = _filter_image_references(
+                    _collect_image_references(resp),
+                    include_preview=False,
+                )
                 if refs:
                     logger.debug(
                         "Image edit collect parsed upstream images",

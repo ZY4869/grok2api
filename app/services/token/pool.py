@@ -142,6 +142,8 @@ class TokenPool:
                 stats.expired += 1
             elif token.status == TokenStatus.COOLING:
                 stats.cooling += 1
+            elif token.status == TokenStatus.BLACKLISTED:
+                stats.blacklisted += 1
 
         if stats.total > 0:
             stats.avg_quota = stats.total_quota / stats.total

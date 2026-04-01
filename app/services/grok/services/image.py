@@ -20,7 +20,11 @@ from app.services.grok.services.image_edit import (
 )
 from app.services.grok.utils.process import BaseProcessor
 from app.services.grok.utils.local_assets import LocalAssetStore
-from app.services.grok.utils.retry import rate_limited
+from app.services.grok.utils.retry import (
+    bad_request_upstream,
+    rate_limited,
+    summarize_upstream_body,
+)
 from app.services.grok.utils.response import make_response_id, make_chat_chunk, wrap_image_content
 from app.services.grok.utils.stream import wrap_stream_with_usage
 from app.services.token import EffortType
@@ -176,6 +180,23 @@ class ImageGenerationService:
                         return
                     except UpstreamException as e:
                         last_error = e
+                        if bad_request_upstream(e):
+                            result = await token_mgr.mark_bad_request_failed(
+                                current_token,
+                                status_code=400,
+                                reason="app_chat_bad_request",
+                                body_summary=summarize_upstream_body(e),
+                            )
+                            logger.warning(
+                                "Image stream token hit upstream 400, trying next token",
+                                extra={
+                                    "model": model_info.model_id,
+                                    "attempt": attempt + 1,
+                                    "token": f"{current_token[:10]}...",
+                                    "bad_request_action": result.get("action"),
+                                },
+                            )
+                            continue
                         if quota_requirement and _should_probe_image_limit(e):
                             if await confirm_quota_exhausted(
                                 token_mgr,
@@ -281,6 +302,23 @@ class ImageGenerationService:
                 )
             except UpstreamException as e:
                 last_error = e
+                if bad_request_upstream(e):
+                    result = await token_mgr.mark_bad_request_failed(
+                        current_token,
+                        status_code=400,
+                        reason="app_chat_bad_request",
+                        body_summary=summarize_upstream_body(e),
+                    )
+                    logger.warning(
+                        "Image collect token hit upstream 400, trying next token",
+                        extra={
+                            "model": model_info.model_id,
+                            "attempt": attempt + 1,
+                            "token": f"{current_token[:10]}...",
+                            "bad_request_action": result.get("action"),
+                        },
+                    )
+                    continue
                 if quota_requirement and _should_probe_image_limit(e):
                     if await confirm_quota_exhausted(
                         token_mgr,
@@ -466,6 +504,8 @@ class ImageGenerationService:
                     )
                 except UpstreamException as e:
                     last_error = e
+                    if bad_request_upstream(e):
+                        raise
                     if saw_valid_chunk or rate_limited(e):
                         raise
                     logger.warning(
@@ -616,6 +656,8 @@ class ImageGenerationService:
                 )
             except UpstreamException as e:
                 last_error = e
+                if bad_request_upstream(e):
+                    raise
                 if rate_limited(e):
                     raise
                 logger.warning(
@@ -1019,29 +1061,10 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
                         self._partial_map[image_id] = 0
                 else:
                     stage = item.get("stage") or "partial"
-                    if stage == "preview":
-                        continue
                     partial_index = self._partial_map.get(image_id, 0)
                     if stage == "medium":
                         partial_index = max(partial_index, 1)
                     self._partial_map[image_id] = partial_index
-
-                if self.response_format == "url":
-                    partial_id = f"{image_id}-{stage}-{partial_index}"
-                    partial_out = await self._save_blob(
-                        partial_id,
-                        item.get("blob", ""),
-                        False,
-                        ext=item.get("ext"),
-                    )
-                else:
-                    partial_out = self._strip_base64(item.get("blob", ""))
-
-                if self.chat_format and partial_out:
-                    partial_out = wrap_image_content(partial_out, self.response_format)
-
-                if not partial_out:
-                    continue
 
                 if self.chat_format:
                     # OpenAI ChatCompletion chunk format for partial
@@ -1064,13 +1087,14 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
                         "image_generation.partial_image",
                         {
                             "type": "image_generation.partial_image",
-                            self.response_field: partial_out,
+                            self.response_field: "",
                             "created_at": int(time.time()),
                             "size": self.size,
                             "index": index,
                             "partial_image_index": partial_index,
                             "image_id": image_id,
                             "stage": stage,
+                            "progress": item.get("progress", 0),
                         },
                     )
 
@@ -1078,18 +1102,24 @@ class ImageWSStreamProcessor(ImageWSBaseProcessor):
             target_item = images.get(self._target_id) if self._target_id else None
             if target_item and target_item.get("is_final", False):
                 selected = [(self._target_id, target_item)]
-            elif images:
-                selected = [
-                    max(
-                        images.items(),
-                        key=lambda x: (
-                            x[1].get("is_final", False),
-                            x[1].get("blob_size", 0),
-                        ),
-                    )
-                ]
             else:
-                selected = []
+                final_candidates = [
+                    item
+                    for item in images.items()
+                    if item[1].get("is_final", False)
+                ]
+                if final_candidates:
+                    selected = [
+                        max(
+                            final_candidates,
+                            key=lambda x: (
+                                x[1].get("is_final", False),
+                                x[1].get("blob_size", 0),
+                            ),
+                        )
+                    ]
+                else:
+                    selected = []
         else:
             selected = [
                 (image_id, images[image_id])

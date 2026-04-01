@@ -2,6 +2,7 @@
 Direct video extension service (app-chat based).
 """
 
+import asyncio
 import re
 import time
 import uuid
@@ -11,9 +12,19 @@ from app.core.exceptions import AppException, ErrorType, UpstreamException, Vali
 from app.core.logger import logger
 from app.services.grok.services.model import ModelService
 from app.services.grok.services.video import VideoCollectProcessor
+from app.services.grok.utils.retry import (
+    bad_request_upstream,
+    rate_limited,
+    summarize_upstream_body,
+)
 from app.services.reverse.app_chat import AppChatReverse
 from app.services.reverse.utils.session import ResettableSession
 from app.services.token import EffortType, get_token_manager
+from app.services.token.quota import (
+    RATE_LIMIT_ACTION_RETRY_SAME_TOKEN,
+    rate_limit_requirement_for_model,
+    resolve_rate_limit_hit,
+)
 
 
 VIDEO_MODEL_ID = "grok-imagine-1.0-video"
@@ -122,23 +133,16 @@ class VideoExtendService:
 
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
+        max_token_retries = int(getattr(ModelService, "max_retry", 0) or 0)
+        if max_token_retries <= 0:
+            from app.core.config import get_config
 
-        token_info = token_mgr.get_token_for_video(
-            resolution=resolution_name,
-            video_length=video_length,
-            pool_candidates=ModelService.pool_candidates_for_model(VIDEO_MODEL_ID),
-        )
-        if not token_info:
-            raise AppException(
-                message="No available tokens. Please try again later.",
-                error_type=ErrorType.RATE_LIMIT.value,
-                code="rate_limit_exceeded",
-                status_code=429,
-            )
-
-        token = token_info.token
-        if token.startswith("sso="):
-            token = token[4:]
+            max_token_retries = int(get_config("retry.max_retry") or 3)
+        tried_tokens: set[str] = set()
+        exhausted_tokens: set[str] = set()
+        preferred_token: Optional[str] = None
+        last_error: Optional[Exception] = None
+        quota_requirement = rate_limit_requirement_for_model(VIDEO_MODEL_ID)
 
         model_config_override = {
             "modelMap": {
@@ -160,27 +164,132 @@ class VideoExtendService:
             }
         }
 
-        # Direct app-chat call for extension path (no auto step splitting).
-        session = ResettableSession()
-        response = await AppChatReverse.request(
-            session,
-            token,
-            message=f"{prompt} --mode=custom",
-            model="grok-3",
-            tool_overrides={"videoGen": True},
-            model_config_override=model_config_override,
-        )
+        def _raise_no_token() -> None:
+            if last_error:
+                raise last_error
+            raise AppException(
+                message="No available tokens. Please try again later.",
+                error_type=ErrorType.RATE_LIMIT.value,
+                code="rate_limit_exceeded",
+                status_code=429,
+            )
 
-        result = await VideoCollectProcessor(VIDEO_MODEL_ID, token).process(response)
-        choices = result.get("choices") if isinstance(result, dict) else None
-        if not isinstance(choices, list) or not choices:
-            raise UpstreamException("Video extension failed: empty result")
+        def _select_token() -> Optional[str]:
+            nonlocal preferred_token
+            if preferred_token and preferred_token not in exhausted_tokens:
+                preferred_pool, preferred_info = token_mgr.get_token_entry(preferred_token)
+                if (
+                    preferred_info
+                    and preferred_pool
+                    and token_mgr.is_token_selectable(
+                        preferred_info,
+                        preferred_pool,
+                        model_id=VIDEO_MODEL_ID,
+                    )
+                ):
+                    token_mgr.bind_token_context(preferred_token)
+                    token = preferred_token
+                    preferred_token = None
+                    return token
+                preferred_token = None
 
-        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-        rendered = msg.get("content", "") if isinstance(msg, dict) else ""
-        video_url = _extract_video_url(rendered)
+            token_info = token_mgr.get_token_for_video(
+                resolution=resolution_name,
+                video_length=video_length,
+                pool_candidates=ModelService.pool_candidates_for_model(VIDEO_MODEL_ID),
+                exclude=tried_tokens | exhausted_tokens,
+                model_id=VIDEO_MODEL_ID,
+            )
+            if not token_info:
+                return None
+
+            token = token_info.token
+            if token.startswith("sso="):
+                token = token[4:]
+            return token
+
+        token = ""
+        video_url = ""
+
+        for attempt in range(max_token_retries):
+            token = _select_token() or ""
+            if not token:
+                _raise_no_token()
+
+            tried_tokens.add(token)
+
+            session = ResettableSession()
+            try:
+                response = await AppChatReverse.request(
+                    session,
+                    token,
+                    message=f"{prompt} --mode=custom",
+                    model="grok-3",
+                    tool_overrides={"videoGen": True},
+                    model_config_override=model_config_override,
+                )
+
+                result = await VideoCollectProcessor(VIDEO_MODEL_ID, token).process(response)
+                choices = result.get("choices") if isinstance(result, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    raise UpstreamException("Video extension failed: empty result")
+
+                msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                rendered = msg.get("content", "") if isinstance(msg, dict) else ""
+                video_url = _extract_video_url(rendered)
+                if not video_url:
+                    raise UpstreamException("Video extension failed: missing video URL")
+                break
+            except UpstreamException as e:
+                last_error = e
+                if bad_request_upstream(e):
+                    result = await token_mgr.mark_bad_request_failed(
+                        token,
+                        status_code=400,
+                        reason="app_chat_bad_request",
+                        body_summary=summarize_upstream_body(e),
+                    )
+                    logger.warning(
+                        "Video extension token hit upstream 400, trying next token",
+                        extra={
+                            "attempt": attempt + 1,
+                            "token": f"{token[:10]}...",
+                            "bad_request_action": result.get("action"),
+                        },
+                    )
+                    continue
+                if rate_limited(e):
+                    resolution = await resolve_rate_limit_hit(
+                        token_mgr,
+                        token,
+                        VIDEO_MODEL_ID,
+                        requirement=quota_requirement,
+                        exhausted_tokens=exhausted_tokens,
+                    )
+                    if resolution.action == RATE_LIMIT_ACTION_RETRY_SAME_TOKEN:
+                        tried_tokens.discard(token)
+                        preferred_token = token
+                        if resolution.retry_after_seconds > 0:
+                            await asyncio.sleep(resolution.retry_after_seconds)
+                        logger.info(
+                            f"Token {token[:10]}... rate limit cleared by probe, "
+                            f"retrying same token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Token {token[:10]}... rate limited (429), "
+                            f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                        )
+                    continue
+                raise
+            finally:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+
         if not video_url:
-            raise UpstreamException("Video extension failed: missing video URL")
+            _raise_no_token()
 
         model_info = ModelService.get(VIDEO_MODEL_ID)
         effort = (

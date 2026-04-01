@@ -535,7 +535,15 @@ def count_candidate_tokens(token_mgr, model_id: str) -> int:
         for token_info in pool.list():
             if token_info.token in seen:
                 continue
-            if not token_info.is_available(consumed_mode=consumed_mode):
+            if hasattr(token_mgr, "is_token_selectable"):
+                selectable = token_mgr.is_token_selectable(
+                    token_info,
+                    pool_name,
+                    model_id=model_id,
+                )
+            else:
+                selectable = token_info.is_available(consumed_mode=consumed_mode)
+            if not selectable:
                 continue
             seen.add(token_info.token)
     return len(seen)
@@ -552,6 +560,9 @@ async def select_token_for_requirement(
     exhausted_tokens: Optional[Set[str]] = None,
 ) -> TokenSelectionResult:
     total_candidates = count_candidate_tokens(token_mgr, model_id)
+    candidate_pools = ModelService.pool_candidates_for_model(model_id)
+    primary_pool = candidate_pools[0] if candidate_pools else ""
+    dedicated_media = ModelService.is_dedicated_media_model(model_id)
     excluded = set(tried or set())
     if exhausted_tokens:
         excluded.update(exhausted_tokens)
@@ -559,6 +570,18 @@ async def select_token_for_requirement(
     async def _accept(candidate: Optional[str]) -> Optional[str]:
         if not candidate or candidate in excluded:
             return None
+        if hasattr(token_mgr, "get_token_entry") and hasattr(token_mgr, "is_token_selectable"):
+            pool_name, token_info = token_mgr.get_token_entry(candidate)
+            if (
+                not token_info
+                or not pool_name
+                or not token_mgr.is_token_selectable(
+                    token_info,
+                    pool_name,
+                    model_id=model_id,
+                )
+            ):
+                return None
         if not requirement:
             return candidate
 
@@ -583,14 +606,32 @@ async def select_token_for_requirement(
     if preferred and preferred not in excluded:
         accepted = await _accept(preferred)
         if accepted:
+            preferred_pool = ""
+            if hasattr(token_mgr, "get_pool_name_for_token"):
+                try:
+                    preferred_pool = token_mgr.get_pool_name_for_token(accepted) or ""
+                except Exception:
+                    preferred_pool = ""
             if hasattr(token_mgr, "bind_token_context"):
                 try:
                     token_mgr.bind_token_context(accepted)
                 except Exception:
                     pass
+            logger.info(
+                "token_requirement_selected",
+                extra={
+                    "model_id": model_id,
+                    "candidate_pools": candidate_pools,
+                    "selected_pool": preferred_pool,
+                    "fallback_from": primary_pool if preferred_pool and preferred_pool != primary_pool else "",
+                    "quota_slot": getattr(requirement, "slot", ""),
+                    "is_dedicated_media_model": dedicated_media,
+                    "token": f"{accepted[:10]}...",
+                },
+            )
             return TokenSelectionResult(token=accepted, total_candidates=total_candidates)
 
-    for pool_name in ModelService.pool_candidates_for_model(model_id):
+    for pool_name in candidate_pools:
         while True:
             token_info = token_mgr.get_token_info(
                 pool_name,
@@ -604,12 +645,36 @@ async def select_token_for_requirement(
             candidate = token_info.token
             accepted = await _accept(candidate)
             if accepted:
+                logger.info(
+                    "token_requirement_selected",
+                    extra={
+                        "model_id": model_id,
+                        "candidate_pools": candidate_pools,
+                        "selected_pool": pool_name,
+                        "fallback_from": primary_pool if pool_name != primary_pool else "",
+                        "quota_slot": getattr(requirement, "slot", ""),
+                        "is_dedicated_media_model": dedicated_media,
+                        "token": f"{accepted[:10]}...",
+                    },
+                )
                 return TokenSelectionResult(
                     token=accepted,
                     total_candidates=total_candidates,
                 )
             excluded.add(candidate)
 
+    logger.warning(
+        "token_requirement_unavailable",
+        extra={
+            "model_id": model_id,
+            "candidate_pools": candidate_pools,
+            "selected_pool": "",
+            "fallback_from": "",
+            "quota_slot": getattr(requirement, "slot", ""),
+            "is_dedicated_media_model": dedicated_media,
+            "excluded_count": len(excluded),
+        },
+    )
     return TokenSelectionResult(token=None, total_candidates=total_candidates)
 
 

@@ -267,7 +267,7 @@ async def create_image(body: ImageGenerationRequest, request: Request):
     Image Generation API
 
     流式响应格式:
-    - event: image_generation.partial_image
+    - event: image_generation.partial_image (progress only, no preview image payload)
     - event: image_generation.completed
 
     非流式响应格式:

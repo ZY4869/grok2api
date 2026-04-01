@@ -18,6 +18,132 @@ const byId = (id) => document.getElementById(id);
 const qsa = (selector) => document.querySelectorAll(selector);
 const DEFAULT_QUOTA_BASIC = 80;
 const DEFAULT_QUOTA_SUPER = 140;
+const DEFAULT_QUOTA_HEAVY = 0;
+
+function isUpstreamQuotaPool(pool) {
+  return pool === 'ssoHeavy';
+}
+
+function buildQuotaStats(tokens, isConsumedMode) {
+  let totalTokens = tokens.length;
+  let activeTokens = 0;
+  let coolingTokens = 0;
+  let invalidTokens = 0;
+  let nsfwTokens = 0;
+  let noNsfwTokens = 0;
+  let totalCalls = 0;
+  let localChatQuota = 0;
+  let localConsumed = 0;
+
+  tokens.forEach((item) => {
+    if (item.status === 'active') {
+      activeTokens++;
+      if (!isUpstreamQuotaPool(item.pool)) {
+        localChatQuota += Number(item.quota || 0);
+      }
+    } else if (item.status === 'cooling') {
+      coolingTokens++;
+    } else {
+      invalidTokens++;
+    }
+
+    if (item.tags && item.tags.includes('nsfw')) {
+      nsfwTokens++;
+    } else {
+      noNsfwTokens++;
+    }
+
+    if (!isUpstreamQuotaPool(item.pool)) {
+      localConsumed += Number(item.consumed || 0);
+    }
+    totalCalls += Number(item.use_count || 0);
+  });
+
+  return {
+    totalTokens,
+    activeTokens,
+    coolingTokens,
+    invalidTokens,
+    nsfwTokens,
+    noNsfwTokens,
+    totalCalls,
+    localChatQuota,
+    localImageQuota: Math.floor(localChatQuota / 2),
+    localConsumed,
+    localConsumedImage: Math.floor(localConsumed / 2)
+  };
+}
+
+function getQuotaDisplayState(item, isConsumedMode) {
+  if (isUpstreamQuotaPool(item.pool)) {
+    return {
+      text: '上游',
+      title: '上游能力额度管理',
+      muted: true
+    };
+  }
+  if (isConsumedMode) {
+    return {
+      text: String(item.consumed || 0),
+      title: t('token.tableQuotaConsumed'),
+      muted: false
+    };
+  }
+  return {
+    text: String(item.quota || 0),
+    title: t('token.tableQuota'),
+    muted: false
+  };
+}
+
+function syncQuotaFieldState(pool, options = {}) {
+  const quotaInput = byId('edit-quota');
+  const quotaField = quotaInput?.closest('div');
+  const quotaLabel = quotaField?.querySelector('label');
+  const helper = byId('edit-quota-helper');
+  if (!quotaInput) return;
+
+  if (consumedModeEnabled) {
+    const quotaValue = options.currentConsumed ?? options.currentQuota ?? 0;
+    quotaInput.value = quotaValue;
+    quotaInput.disabled = true;
+    quotaInput.classList.add('bg-gray-100', 'text-gray-400');
+    if (quotaLabel) quotaLabel.textContent = t('token.tableQuotaConsumed');
+    if (helper) {
+      helper.classList.add('hidden');
+      helper.textContent = '';
+    }
+    return;
+  }
+
+  if (isUpstreamQuotaPool(pool)) {
+    quotaInput.value = DEFAULT_QUOTA_HEAVY;
+    quotaInput.disabled = true;
+    quotaInput.classList.add('bg-gray-100', 'text-gray-400');
+    if (quotaLabel) quotaLabel.textContent = '本地额度';
+    if (helper) {
+      helper.classList.remove('hidden');
+      helper.textContent = 'ssoHeavy 使用上游能力额度管理，本地额度仅用于兼容。';
+    }
+    return;
+  }
+
+  const shouldReset =
+    options.forceDefault ||
+    quotaInput.disabled ||
+    Number.isNaN(parseInt(quotaInput.value, 10));
+  if (shouldReset) {
+    const nextValue = options.currentQuota ?? getDefaultQuotaForPool(pool);
+    quotaInput.value = nextValue;
+  }
+  quotaInput.disabled = false;
+  quotaInput.classList.remove('bg-gray-100', 'text-gray-400');
+  if (quotaLabel) quotaLabel.textContent = t('token.editQuota');
+  if (helper) {
+    helper.classList.add('hidden');
+    helper.textContent = '';
+  }
+}
 
 function getAdminModalHelper() {
   return window.AdminModal && typeof window.AdminModal.open === 'function'
@@ -38,7 +164,8 @@ function hasTokenTableView() {
 }
 
 function getDefaultQuotaForPool(pool) {
-  return pool === 'ssoSuper' || pool === 'ssoHeavy'
+  if (isUpstreamQuotaPool(pool)) return DEFAULT_QUOTA_HEAVY;
+  return pool === 'ssoSuper'
     ? DEFAULT_QUOTA_SUPER
     : DEFAULT_QUOTA_BASIC;
 }
@@ -203,14 +330,19 @@ function processTokens(data) {
             last_sync_at: t.last_sync_at,
             last_asset_clear_at: t.last_asset_clear_at,
             alive: t.alive != null ? t.alive : null,
-            last_alive_check_at: t.last_alive_check_at,
-            cooling_until: t.cooling_until || 0,
-            suspected_rate_limited_until: t.suspected_rate_limited_until || 0,
-            last_rate_limit_probe_at: t.last_rate_limit_probe_at || 0,
-            last_rate_limit_probe_result:
-              t.last_rate_limit_probe_result && typeof t.last_rate_limit_probe_result === 'object'
-                ? t.last_rate_limit_probe_result
-                : null
+             last_alive_check_at: t.last_alive_check_at,
+             cooling_until: t.cooling_until || 0,
+             suspected_rate_limited_until: t.suspected_rate_limited_until || 0,
+             last_rate_limit_probe_at: t.last_rate_limit_probe_at || 0,
+             bad_request_fail_count: t.bad_request_fail_count || 0,
+             last_bad_request_at: t.last_bad_request_at || 0,
+             bad_request_cooling_until: t.bad_request_cooling_until || 0,
+             blacklisted_at: t.blacklisted_at || 0,
+             delete_after_at: t.delete_after_at || 0,
+             last_rate_limit_probe_result:
+               t.last_rate_limit_probe_result && typeof t.last_rate_limit_probe_result === 'object'
+                 ? t.last_rate_limit_probe_result
+                 : null
           };
         flatTokens.push({ ...tObj, pool: pool, _selected: false });
       });
@@ -232,64 +364,39 @@ function updateQuotaHeader() {
 }
 
 function updateStats(data) {
-  // Logic same as before, simplified reuse if possible, but let's re-run on flatTokens
-  let totalTokens = flatTokens.length;
-  let activeTokens = 0;
-  let coolingTokens = 0;
-  let invalidTokens = 0;
-  let nsfwTokens = 0;
-  let noNsfwTokens = 0;
-  let chatQuota = 0;
-  let totalCalls = 0;
-
-  flatTokens.forEach(t => {
-    if (t.status === 'active') {
-      activeTokens++;
-      chatQuota += t.quota;
-    } else if (t.status === 'cooling') {
-      coolingTokens++;
-    } else {
-      invalidTokens++;
-    }
-    if (t.tags && t.tags.includes('nsfw')) {
-      nsfwTokens++;
-    } else {
-      noNsfwTokens++;
-    }
-    totalCalls += Number(t.use_count || 0);
-  });
-
-  const imageQuota = Math.floor(chatQuota / 2);
-  const totalConsumed = flatTokens.reduce((sum, t) => sum + (t.consumed || 0), 0);
+  const stats = buildQuotaStats(flatTokens, consumedModeEnabled);
 
   // 更新账号统计卡片
-  setText('stat-total', totalTokens.toLocaleString());
-  setText('stat-active', activeTokens.toLocaleString());
-  setText('stat-cooling', coolingTokens.toLocaleString());
-  setText('stat-invalid', invalidTokens.toLocaleString());
+  setText('stat-total', stats.totalTokens.toLocaleString());
+  setText('stat-active', stats.activeTokens.toLocaleString());
+  setText('stat-cooling', stats.coolingTokens.toLocaleString());
+  setText('stat-invalid', stats.invalidTokens.toLocaleString());
 
-  // 根据配置决定显示消耗还是剩余
   if (consumedModeEnabled) {
-    setText('stat-chat-quota', totalConsumed.toLocaleString());
-    setText('stat-image-quota', Math.floor(totalConsumed / 2).toLocaleString());
+    setText('stat-chat-quota', stats.localConsumed.toLocaleString());
+    setText('stat-image-quota', stats.localConsumedImage.toLocaleString());
     const chatLabel = document.querySelector('[data-i18n="token.statChatQuota"]');
     const imageLabel = document.querySelector('[data-i18n="token.statImageQuota"]');
     if (chatLabel) chatLabel.textContent = t('token.statChatConsumed');
     if (imageLabel) imageLabel.textContent = t('token.statImageConsumed');
   } else {
-    setText('stat-chat-quota', chatQuota.toLocaleString());
-    setText('stat-image-quota', imageQuota.toLocaleString());
+    setText('stat-chat-quota', stats.localChatQuota.toLocaleString());
+    setText('stat-image-quota', stats.localImageQuota.toLocaleString());
+    const chatLabel = document.querySelector('[data-i18n="token.statChatQuota"]');
+    const imageLabel = document.querySelector('[data-i18n="token.statImageQuota"]');
+    if (chatLabel) chatLabel.textContent = t('token.statChatQuota');
+    if (imageLabel) imageLabel.textContent = t('token.statImageQuota');
   }
 
-  setText('stat-total-calls', totalCalls.toLocaleString());
+  setText('stat-total-calls', stats.totalCalls.toLocaleString());
 
   updateTabCounts({
-    all: totalTokens,
-    active: activeTokens,
-    cooling: coolingTokens,
-    expired: invalidTokens,
-    nsfw: nsfwTokens,
-    'no-nsfw': noNsfwTokens
+    all: stats.totalTokens,
+    active: stats.activeTokens,
+    cooling: stats.coolingTokens,
+    expired: stats.invalidTokens,
+    nsfw: stats.nsfwTokens,
+    'no-nsfw': stats.noNsfwTokens
   });
 }
 
@@ -362,6 +469,7 @@ function renderTable() {
     if (item.status === 'active') statusClass = 'badge-green';
     else if (item.status === 'cooling') statusClass = 'badge-orange';
     else if (item.status === 'expired') statusClass = 'badge-red';
+    else if (item.status === 'blacklisted') statusClass = 'badge-red';
     else statusClass = 'badge-gray';
     tdStatus.className = 'text-center';
     let statusHtml = `<span class="badge ${statusClass}">${item.status}</span>`;
@@ -376,13 +484,11 @@ function renderTable() {
     // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
-    // 根据配置决定显示消耗还是剩余
-    if (consumedModeEnabled) {
-      tdQuota.innerText = item.consumed;
-      tdQuota.title = t('token.tableQuotaConsumed');
-    } else {
-      tdQuota.innerText = item.quota;
-      tdQuota.title = t('token.tableQuota');
+    const quotaState = getQuotaDisplayState(item, consumedModeEnabled);
+    tdQuota.innerText = quotaState.text;
+    tdQuota.title = quotaState.title;
+    if (quotaState.muted) {
+      tdQuota.classList.add('text-gray-400');
     }
 
 
@@ -395,14 +501,21 @@ function renderTable() {
     // Actions (Center)
     const tdActions = document.createElement('td');
     tdActions.className = 'text-center';
+    const isBlacklisted = item.status === 'blacklisted';
     const isDisabled = item.status === 'disabled';
-    const toggleTitle = isDisabled ? t('token.enableToken') : t('token.disableToken');
-    const toggleIcon = isDisabled
-      ? '<polyline points="20 6 9 17 4 12"></polyline>'
-      : '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>';
-    const toggleClass = isDisabled
+    const toggleTitle = isBlacklisted
+      ? 'Recover'
+      : (isDisabled ? t('token.enableToken') : t('token.disableToken'));
+    const toggleIcon = isBlacklisted
+      ? '<path d="M3 12a9 9 0 1 0 3-6.7"></path><polyline points="3 3 3 9 9 9"></polyline>'
+      : (isDisabled
+        ? '<polyline points="20 6 9 17 4 12"></polyline>'
+        : '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>');
+    const toggleClass = isBlacklisted
       ? 'p-1 text-gray-400 hover:text-green-600 rounded'
-      : 'p-1 text-gray-400 hover:text-orange-600 rounded';
+      : (isDisabled
+        ? 'p-1 text-gray-400 hover:text-green-600 rounded'
+        : 'p-1 text-gray-400 hover:text-orange-600 rounded');
     tdActions.innerHTML = `
                 <div class="flex items-center justify-center gap-2">
                      <button onclick="refreshStatus('${item.token}')" class="p-1 text-gray-400 hover:text-black rounded" title="${t('token.refreshStatus')}">
@@ -596,20 +709,11 @@ function openEditModal(index) {
     byId('edit-note').value = item.note;
 
     // 根据配置决定是否禁用 quota 编辑
-    const quotaInput = byId('edit-quota');
-    const quotaField = quotaInput?.closest('div');
-    const quotaLabel = quotaField?.querySelector('label');
-    if (consumedModeEnabled) {
-      quotaInput.value = item.consumed || 0;
-      quotaInput.disabled = true;
-      quotaInput.classList.add('bg-gray-100', 'text-gray-400');
-      if (quotaLabel) quotaLabel.textContent = t('token.tableQuotaConsumed');
-    } else {
-      quotaInput.value = item.quota;
-      quotaInput.disabled = false;
-      quotaInput.classList.remove('bg-gray-100', 'text-gray-400');
-      if (quotaLabel) quotaLabel.textContent = t('token.editQuota');
-    }
+    syncQuotaFieldState(item.pool, {
+      currentQuota: item.quota,
+      currentConsumed: item.consumed || 0,
+      forceDefault: false
+    });
 
     document.querySelector('#edit-modal h3').innerText = t('token.editTitle');
   } else {
@@ -623,17 +727,14 @@ function openEditModal(index) {
     byId('edit-original-token').value = '';
     byId('edit-original-pool').value = '';
     byId('edit-pool').value = 'ssoBasic';
-    byId('edit-quota').value = getDefaultQuotaForPool('ssoBasic');
     byId('edit-note').value = '';
     document.querySelector('#edit-modal h3').innerText = t('token.addTitle');
 
     // 新建 Token 时启用 quota 编辑
-    const newQuotaInput = byId('edit-quota');
-    const newQuotaField = newQuotaInput?.closest('div');
-    const newQuotaLabel = newQuotaField?.querySelector('label');
-    newQuotaInput.disabled = false;
-    newQuotaInput.classList.remove('bg-gray-100', 'text-gray-400');
-    if (newQuotaLabel) newQuotaLabel.textContent = t('token.editQuota');
+    syncQuotaFieldState('ssoBasic', {
+      currentQuota: getDefaultQuotaForPool('ssoBasic'),
+      forceDefault: true
+    });
   }
 
   openModal('edit-modal');
@@ -644,8 +745,15 @@ function setupEditPoolDefaults() {
   const quotaInput = byId('edit-quota');
   if (!poolSelect || !quotaInput) return;
   poolSelect.addEventListener('change', () => {
-    if (currentEditIndex >= 0) return;
-    quotaInput.value = getDefaultQuotaForPool(poolSelect.value);
+    const item = currentEditIndex >= 0 ? flatTokens[currentEditIndex] : null;
+    const fallbackQuota = item && !isUpstreamQuotaPool(item.pool)
+      ? item.quota
+      : getDefaultQuotaForPool(poolSelect.value);
+    syncQuotaFieldState(poolSelect.value, {
+      currentQuota: fallbackQuota,
+      currentConsumed: item ? item.consumed || 0 : 0,
+      forceDefault: currentEditIndex < 0 || quotaInput.disabled || isUpstreamQuotaPool(poolSelect.value)
+    });
   });
 }
 
@@ -671,7 +779,9 @@ async function saveEdit() {
     // Updating existing
     const item = flatTokens[currentEditIndex];
     token = item.token;
-    const newQuota = consumedModeEnabled
+    const newQuota = isUpstreamQuotaPool(newPool)
+      ? DEFAULT_QUOTA_HEAVY
+      : consumedModeEnabled
       ? item.quota
       : (Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue);
 
@@ -681,7 +791,9 @@ async function saveEdit() {
     item.note = newNote;
   } else {
     // Creating new
-    const newQuota = Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue;
+    const newQuota = isUpstreamQuotaPool(newPool)
+      ? DEFAULT_QUOTA_HEAVY
+      : (Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue);
     token = byId('edit-token-display').value.trim();
     if (!token) return showToast(t('token.tokenEmpty'), 'error');
 
@@ -716,9 +828,35 @@ async function deleteToken(index) {
   syncToServer().then(loadData);
 }
 
+async function recoverBlacklistedToken(token) {
+  const res = await fetch('/v1/admin/tokens/recover', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildAuthHeaders(apiKey)
+    },
+    body: JSON.stringify({ tokens: [token] })
+  });
+  const data = await readJsonResponse(res);
+  if (!res.ok || !data || data.status !== 'success') {
+    throw new Error((data && (data.detail || data.message)) || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
 async function toggleTokenEnabled(index) {
   const item = flatTokens[index];
   if (!item) return;
+  if (item.status === 'blacklisted') {
+    try {
+      await recoverBlacklistedToken(item.token);
+      await loadData();
+      showToast('Recovered blacklisted token', 'success');
+    } catch (e) {
+      showToast(t('common.saveError', { msg: e.message }), 'error');
+    }
+    return;
+  }
   const toDisabled = item.status !== 'disabled';
   const targetStatus = toDisabled ? 'disabled' : 'active';
   const confirmKey = toDisabled ? 'token.confirmDisable' : 'token.confirmEnable';
@@ -741,7 +879,9 @@ function batchDelete() {
 function _getBatchStatusTargets(targetStatus) {
   const selected = getSelectedTokens();
   if (selected.length === 0) return { selected, targets: [] };
-  const targets = selected.filter(item => item.status !== targetStatus);
+  const targets = selected.filter(
+    item => item.status !== 'blacklisted' && item.status !== targetStatus
+  );
   return { selected, targets };
 }
 
@@ -800,7 +940,20 @@ async function syncToServer() {
     if (typeof t.last_fail_at === 'number') payload.last_fail_at = t.last_fail_at;
     if (typeof t.last_sync_at === 'number') payload.last_sync_at = t.last_sync_at;
     if (typeof t.last_asset_clear_at === 'number') payload.last_asset_clear_at = t.last_asset_clear_at;
+    if (typeof t.last_alive_check_at === 'number') payload.last_alive_check_at = t.last_alive_check_at;
+    if (typeof t.cooling_until === 'number') payload.cooling_until = t.cooling_until;
+    if (typeof t.suspected_rate_limited_until === 'number') payload.suspected_rate_limited_until = t.suspected_rate_limited_until;
+    if (typeof t.last_rate_limit_probe_at === 'number') payload.last_rate_limit_probe_at = t.last_rate_limit_probe_at;
+    if (typeof t.bad_request_fail_count === 'number') payload.bad_request_fail_count = t.bad_request_fail_count;
+    if (typeof t.last_bad_request_at === 'number') payload.last_bad_request_at = t.last_bad_request_at;
+    if (typeof t.bad_request_cooling_until === 'number') payload.bad_request_cooling_until = t.bad_request_cooling_until;
+    if (typeof t.blacklisted_at === 'number') payload.blacklisted_at = t.blacklisted_at;
+    if (typeof t.delete_after_at === 'number') payload.delete_after_at = t.delete_after_at;
     if (typeof t.last_fail_reason === 'string' && t.last_fail_reason) payload.last_fail_reason = t.last_fail_reason;
+    if (t.last_rate_limit_probe_result && typeof t.last_rate_limit_probe_result === 'object') {
+      payload.last_rate_limit_probe_result = t.last_rate_limit_probe_result;
+    }
+    if (typeof t.alive === 'boolean') payload.alive = t.alive;
     newTokens[t.pool].push(payload);
   });
 
@@ -1463,7 +1616,15 @@ async function batchEnableNSFW() {
     setActionButtonsState();
   }
 }
+if (typeof window !== 'undefined') {
+  window.onload = init;
+}
 
-
-
-window.onload = init;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildQuotaStats,
+    getDefaultQuotaForPool,
+    getQuotaDisplayState,
+    isUpstreamQuotaPool
+  };
+}

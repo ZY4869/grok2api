@@ -204,6 +204,36 @@ async def delete_tokens(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/tokens/recover", dependencies=[Depends(verify_app_key)])
+async def recover_blacklisted_tokens(data: dict):
+    tokens = _collect_request_tokens(data or {})
+    if not tokens:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    try:
+        mgr = await get_token_manager()
+        recovered = 0
+        skipped = 0
+        for token in tokens:
+            ok = await mgr.recover_blacklisted(token)
+            if ok:
+                recovered += 1
+            else:
+                skipped += 1
+
+        await mgr._save(force=True)
+        return {
+            "status": "success",
+            "requested": len(tokens),
+            "recovered": recovered,
+            "skipped": skipped,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tokens/refresh", dependencies=[Depends(verify_app_key)])
 async def refresh_tokens(data: dict):
     """刷新 Token 状态"""

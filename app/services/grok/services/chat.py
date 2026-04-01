@@ -32,7 +32,13 @@ from app.services.grok.utils.prompt_debug import (
     summarize_chat_messages,
     summarize_prompt_text,
 )
-from app.services.grok.utils.retry import pick_token, rate_limited, transient_upstream
+from app.services.grok.utils.retry import (
+    bad_request_upstream,
+    pick_token,
+    rate_limited,
+    summarize_upstream_body,
+    transient_upstream,
+)
 from app.services.reverse.app_chat import (
     AppChatRequestMetadata,
     AppChatRequestResult,
@@ -816,7 +822,11 @@ def _collect_final_image_urls(value: Any) -> List[str]:
     seen: set[str] = set()
     results: List[str] = []
 
-    for ref in proc_base._collect_image_references(value):
+    refs = proc_base._filter_image_references(
+        proc_base._collect_image_references(value),
+        include_preview=False,
+    )
+    for ref in refs:
         if not _is_final_image_url(ref.url) or ref.url in seen:
             continue
         seen.add(ref.url)
@@ -863,7 +873,12 @@ def _collect_preview_image_urls(value: Any) -> List[str]:
         seen.add(text)
         results.append(text)
 
-    for ref in proc_base._collect_image_references(value):
+    refs = proc_base._filter_image_references(
+        proc_base._collect_image_references(value),
+        include_final=False,
+        include_unknown=False,
+    )
+    for ref in refs:
         _add(ref.url)
 
     def _walk(item: Any) -> None:
@@ -1323,7 +1338,12 @@ def _inspect_stream_line(raw_line: Any) -> tuple[bool, bool]:
         return False, False
     resp = data.get("result", {}).get("response", {})
     has_streaming_image_event = bool(resp.get("streamingImageGenerationResponse"))
-    has_refs = bool(proc_base._collect_image_references(resp))
+    has_refs = bool(
+        proc_base._filter_image_references(
+            proc_base._collect_image_references(resp),
+            include_preview=False,
+        )
+    )
     return has_refs, has_streaming_image_event
 
 
@@ -1480,7 +1500,8 @@ class ChatService:
                 _raise_no_token(selection_total)
 
             tried_tokens.add(token)
-            token_mgr.bind_token_context(token)
+            if hasattr(token_mgr, "bind_token_context"):
+                token_mgr.bind_token_context(token)
 
             try:
                 # 请求 Grok
@@ -1548,6 +1569,24 @@ class ChatService:
 
             except UpstreamException as e:
                 last_error = e
+
+                if bad_request_upstream(e):
+                    result = await token_mgr.mark_bad_request_failed(
+                        token,
+                        status_code=400,
+                        reason="app_chat_bad_request",
+                        body_summary=summarize_upstream_body(e),
+                    )
+                    logger.warning(
+                        "AppChat upstream 400, trying next token",
+                        extra={
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "token": f"{token[:10]}...",
+                            "bad_request_action": result.get("action"),
+                        },
+                    )
+                    continue
 
                 if quota_requirement and _should_probe_auto_image_limit(e):
                     if await confirm_quota_exhausted(
@@ -1643,11 +1682,23 @@ def _image_log_extra(
     *,
     has_streaming_image_event: bool,
 ) -> dict[str, Any]:
+    preview_count = sum(
+        1 for ref in refs if ref.stage == proc_base.IMAGE_STAGE_PREVIEW
+    )
+    final_count = sum(
+        1 for ref in refs if ref.stage == proc_base.IMAGE_STAGE_FINAL
+    )
+    unknown_count = sum(
+        1 for ref in refs if ref.stage == proc_base.IMAGE_STAGE_UNKNOWN
+    )
     return {
         "model": model,
         "source_shape": ",".join(sorted({ref.source_shape for ref in refs})),
         "image_ref_count": len(refs),
         "has_streaming_image_event": has_streaming_image_event,
+        "preview_ref_count": preview_count,
+        "final_ref_count": final_count,
+        "unknown_ref_count": unknown_count,
     }
 
 
@@ -1661,18 +1712,37 @@ async def _render_chat_image_refs(
     if not refs:
         return []
 
+    renderable_refs = proc_base._filter_image_references(
+        refs,
+        include_preview=False,
+    )
+    filtered_preview_count = max(0, len(refs) - len(renderable_refs))
+    log_extra = _image_log_extra(
+        processor.model,
+        refs,
+        has_streaming_image_event=has_streaming_image_event,
+    )
+    log_extra["filtered_preview_count"] = filtered_preview_count
+
     logger.debug(
         "Chat parsed upstream images",
-        extra=_image_log_extra(
-            processor.model,
-            refs,
-            has_streaming_image_event=has_streaming_image_event,
-        ),
+        extra=log_extra,
     )
+
+    if filtered_preview_count and not renderable_refs:
+        logger.info(
+            "Chat preview images filtered from output",
+            extra={
+                **log_extra,
+                "image_stage": proc_base.IMAGE_STAGE_PREVIEW,
+                "rendered_final_count": 0,
+            },
+        )
+        return []
 
     outputs: list[str] = []
     dl_service = processor._get_dl()
-    for ref in refs:
+    for ref in renderable_refs:
         if ref.url in seen_urls:
             continue
         seen_urls.add(ref.url)
@@ -1683,6 +1753,21 @@ async def _render_chat_image_refs(
         )
         if rendered:
             outputs.append(rendered)
+
+    if outputs or filtered_preview_count:
+        rendered_stage = (
+            proc_base.IMAGE_STAGE_FINAL
+            if log_extra["final_ref_count"] > 0
+            else proc_base.IMAGE_STAGE_UNKNOWN
+        )
+        logger.info(
+            "Chat image output finalized",
+            extra={
+                **log_extra,
+                "image_stage": rendered_stage,
+                "rendered_final_count": len(outputs),
+            },
+        )
     return outputs
 
 
@@ -1958,18 +2043,35 @@ class StreamProcessor(proc_base.BaseProcessor):
                     refs = proc_base._collect_image_references(
                         {"streamingImageGenerationResponse": img}
                     )
-                    if refs:
+                    renderable_refs = proc_base._filter_image_references(
+                        refs,
+                        include_preview=False,
+                    )
+                    if renderable_refs:
                         close_chunk = self._close_think_chunk()
                         if close_chunk:
                             yield close_chunk
                         self.image_think_active = False
                         for rendered in await _render_chat_image_refs(
                             self,
-                            refs,
+                            renderable_refs,
                             self._seen_image_urls,
                             has_streaming_image_event=True,
                         ):
                             yield self._sse(f"{rendered}\n")
+                        continue
+                    elif refs and not self.show_think:
+                        logger.info(
+                            "Chat stream suppressed preview-only images",
+                            extra={
+                                "model": self.model,
+                                "image_stage": proc_base.IMAGE_STAGE_PREVIEW,
+                                "filtered_preview_count": len(refs),
+                                "rendered_final_count": 0,
+                                "has_streaming_image_event": True,
+                            },
+                        )
+                        self.image_think_active = False
                         continue
                     elif not self.show_think:
                         logger.warning(
@@ -2000,9 +2102,13 @@ class StreamProcessor(proc_base.BaseProcessor):
                     if close_chunk:
                         yield close_chunk
                     self.image_think_active = False
+                    refs = proc_base._filter_image_references(
+                        proc_base._collect_image_references(mr),
+                        include_preview=False,
+                    )
                     for rendered in await _render_chat_image_refs(
                         self,
-                        proc_base._collect_image_references(mr),
+                        refs,
                         self._seen_image_urls,
                         has_streaming_image_event=False,
                     ):
@@ -2204,14 +2310,29 @@ class CollectProcessor(proc_base.BaseProcessor):
                     refs = proc_base._collect_image_references(
                         {"streamingImageGenerationResponse": img}
                     )
-                    if refs:
+                    renderable_refs = proc_base._filter_image_references(
+                        refs,
+                        include_preview=False,
+                    )
+                    if renderable_refs:
                         streaming_outputs.extend(
                             await _render_chat_image_refs(
                                 self,
-                                refs,
+                                renderable_refs,
                                 seen_image_urls,
                                 has_streaming_image_event=True,
                             )
+                        )
+                    elif refs:
+                        logger.info(
+                            "Chat collect suppressed preview-only images",
+                            extra={
+                                "model": self.model,
+                                "image_stage": proc_base.IMAGE_STAGE_PREVIEW,
+                                "filtered_preview_count": len(refs),
+                                "rendered_final_count": 0,
+                                "has_streaming_image_event": True,
+                            },
                         )
                     else:
                         logger.warning(
@@ -2274,7 +2395,10 @@ class CollectProcessor(proc_base.BaseProcessor):
 
                     for rendered in await _render_chat_image_refs(
                         self,
-                        proc_base._collect_image_references(mr),
+                        proc_base._filter_image_references(
+                            proc_base._collect_image_references(mr),
+                            include_preview=False,
+                        ),
                         seen_image_urls,
                         has_streaming_image_event=False,
                     ):
@@ -2286,8 +2410,11 @@ class CollectProcessor(proc_base.BaseProcessor):
                         streaming_outputs.extend(
                             await _render_chat_image_refs(
                                 self,
-                                proc_base._collect_image_references(
-                                    {"cardAttachment": card}
+                                proc_base._filter_image_references(
+                                    proc_base._collect_image_references(
+                                        {"cardAttachment": card}
+                                    ),
+                                    include_preview=False,
                                 ),
                                 seen_image_urls,
                                 has_streaming_image_event=False,
@@ -2305,8 +2432,11 @@ class CollectProcessor(proc_base.BaseProcessor):
                     streaming_outputs.extend(
                         await _render_chat_image_refs(
                             self,
-                            proc_base._collect_image_references(
-                                {"cardAttachment": card}
+                            proc_base._filter_image_references(
+                                proc_base._collect_image_references(
+                                    {"cardAttachment": card}
+                                ),
+                                include_preview=False,
                             ),
                             seen_image_urls,
                             has_streaming_image_event=False,

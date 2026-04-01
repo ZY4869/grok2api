@@ -29,6 +29,7 @@ class TokenStatus(str, Enum):
     DISABLED = "disabled"
     EXPIRED = "expired"
     COOLING = "cooling"
+    BLACKLISTED = "blacklisted"
 
 
 class EffortType(str, Enum):
@@ -77,6 +78,11 @@ class TokenInfo(BaseModel):
     suspected_rate_limited_until: Optional[int] = None
     last_rate_limit_probe_at: Optional[int] = None
     last_rate_limit_probe_result: Optional[dict[str, Any]] = None
+    bad_request_fail_count: int = 0
+    last_bad_request_at: Optional[int] = None
+    bad_request_cooling_until: Optional[int] = None
+    blacklisted_at: Optional[int] = None
+    delete_after_at: Optional[int] = None
 
     # 扩展
     tags: List[str] = Field(default_factory=list)
@@ -137,11 +143,22 @@ class TokenInfo(BaseModel):
         """检查当前模式下 token 是否可用。"""
         if self.status != TokenStatus.ACTIVE:
             return False
+        if self.alive is False:
+            return False
         if self.is_soft_rate_limited():
+            return False
+        if self.is_bad_request_cooled():
             return False
         if consumed_mode:
             return True
         return self.quota > 0
+
+    def is_bad_request_cooled(self, now_ms: Optional[int] = None) -> bool:
+        if self.bad_request_cooling_until is None:
+            return False
+        if now_ms is None:
+            now_ms = int(datetime.now().timestamp() * 1000)
+        return now_ms < self.bad_request_cooling_until
 
     def is_soft_rate_limited(self, now_ms: Optional[int] = None) -> bool:
         """Whether this token is temporarily soft-cooled after an unconfirmed 429."""
@@ -180,15 +197,69 @@ class TokenInfo(BaseModel):
         if reset_consumed:
             self.consumed = 0
 
-    def recover_active(self, allow_from_expired: bool = False):
+    def recover_active(
+        self,
+        allow_from_expired: bool = False,
+        allow_from_blacklisted: bool = False,
+    ):
         """仅在允许的前提下恢复为 active。"""
         if self.status == TokenStatus.COOLING:
             self.status = TokenStatus.ACTIVE
             self.cooling_until = None
         elif allow_from_expired and self.status == TokenStatus.EXPIRED:
             self.status = TokenStatus.ACTIVE
+        elif allow_from_blacklisted and self.status == TokenStatus.BLACKLISTED:
+            self.status = TokenStatus.ACTIVE
         self.cooling_until = None
         self.clear_soft_rate_limit()
+
+    def clear_bad_request_state(self, *, clear_blacklist: bool = False):
+        self.bad_request_fail_count = 0
+        self.last_bad_request_at = None
+        self.bad_request_cooling_until = None
+        if clear_blacklist:
+            self.blacklisted_at = None
+            self.delete_after_at = None
+            if self.status == TokenStatus.BLACKLISTED:
+                self.status = TokenStatus.ACTIVE
+
+    def record_bad_request(
+        self,
+        *,
+        cooling_until_ms: Optional[int],
+        blacklist_threshold: int,
+        delete_after_ms: Optional[int],
+    ) -> str:
+        now_ms = int(datetime.now().timestamp() * 1000)
+        if self.status == TokenStatus.BLACKLISTED:
+            self.last_bad_request_at = now_ms
+            if delete_after_ms is not None and self.delete_after_at is None:
+                self.delete_after_at = max(0, int(delete_after_ms))
+            return "blacklist"
+
+        self.last_bad_request_at = now_ms
+        self.bad_request_fail_count = max(0, int(self.bad_request_fail_count or 0)) + 1
+
+        threshold = max(1, int(blacklist_threshold or 1))
+        if self.bad_request_fail_count >= threshold:
+            self.status = TokenStatus.BLACKLISTED
+            self.bad_request_cooling_until = None
+            self.blacklisted_at = now_ms
+            self.delete_after_at = (
+                None if delete_after_ms is None else max(0, int(delete_after_ms))
+            )
+            return "blacklist"
+
+        self.bad_request_cooling_until = (
+            None if cooling_until_ms is None else max(0, int(cooling_until_ms))
+        )
+        self.blacklisted_at = None
+        self.delete_after_at = None
+        return "quarantine"
+
+    def recover_from_blacklist(self):
+        self.clear_bad_request_state(clear_blacklist=True)
+        self.recover_active(allow_from_expired=True, allow_from_blacklisted=True)
 
     def consume(self, effort: EffortType = EffortType.LOW) -> int:
         """
@@ -284,6 +355,7 @@ class TokenInfo(BaseModel):
         # 重置消耗记录
         self.consumed = 0
         self.clear_soft_rate_limit()
+        self.clear_bad_request_state(clear_blacklist=True)
         self.last_rate_limit_probe_at = None
         self.last_rate_limit_probe_result = None
 
@@ -296,6 +368,8 @@ class TokenInfo(BaseModel):
         """记录失败，达到阈值后自动标记为 expired"""
         # 仅 401 计入失败
         if status_code != 401:
+            return
+        if self.status == TokenStatus.BLACKLISTED:
             return
 
         self.fail_count += 1
@@ -313,6 +387,7 @@ class TokenInfo(BaseModel):
         self.last_fail_reason = None
         self.cooling_until = None
         self.clear_soft_rate_limit()
+        self.clear_bad_request_state()
 
         if is_usage:
             self.use_count += 1
@@ -363,6 +438,7 @@ class TokenPoolStats(BaseModel):
     disabled: int = 0
     expired: int = 0
     cooling: int = 0
+    blacklisted: int = 0
     total_quota: int = 0
     avg_quota: float = 0.0
     total_consumed: int = 0
