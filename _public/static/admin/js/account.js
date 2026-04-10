@@ -3,14 +3,78 @@ let allTokens = [];
 let pendingConfirmFn = null;
 let importController = null;
 let editingToken = null;
+const ACCOUNT_PAGE_SIZES = Object.freeze([10, 20, 30]);
+const ACCOUNT_PAGE_SIZE_DEFAULT = ACCOUNT_PAGE_SIZES[0];
+const ACCOUNT_PAGE_SIZE_STORAGE_KEY = "accountPageSize";
 const REAL_QUOTA_DISPLAY_MODE_KEY = "accountRealQuotaDisplayMode";
 const REAL_QUOTA_DISPLAY_MODES = {
   MODEL: "model",
   SHORTCUT: "shortcut",
 };
 let realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
+let accountCurrentPage = 1;
+let accountPageSize = ACCOUNT_PAGE_SIZE_DEFAULT;
 
 const byId = (id) => document.getElementById(id);
+
+function formatTemplate(template, params) {
+  return Object.entries(params || {}).reduce(
+    (result, [key, value]) => result.replace(new RegExp(`\\{${key}\\}`, "g"), String(value)),
+    String(template || "")
+  );
+}
+
+function getAccountText(key, fallback, params) {
+  const fullKey = `account.${key}`;
+  if (typeof t === "function") {
+    const translated = t(fullKey, params);
+    if (translated !== fullKey) return translated;
+  }
+  return formatTemplate(fallback, params);
+}
+
+function normalizeAccountPageSize(value) {
+  const normalized = Number(value);
+  return ACCOUNT_PAGE_SIZES.includes(normalized) ? normalized : ACCOUNT_PAGE_SIZE_DEFAULT;
+}
+
+function loadAccountPageSize() {
+  try {
+    return normalizeAccountPageSize(localStorage.getItem(ACCOUNT_PAGE_SIZE_STORAGE_KEY));
+  } catch {
+    return ACCOUNT_PAGE_SIZE_DEFAULT;
+  }
+}
+
+function saveAccountPageSize(value) {
+  try {
+    localStorage.setItem(
+      ACCOUNT_PAGE_SIZE_STORAGE_KEY,
+      String(normalizeAccountPageSize(value))
+    );
+  } catch {
+    // Ignore storage errors in private mode or locked-down browsers.
+  }
+}
+
+function paginateAccounts(items, page, pageSize) {
+  const list = Array.isArray(items) ? items : [];
+  const normalizedPageSize = normalizeAccountPageSize(pageSize);
+  const totalItems = list.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / normalizedPageSize));
+  const normalizedPage =
+    totalItems === 0 ? 1 : Math.min(Math.max(1, Number(page) || 1), totalPages);
+  const startIndex = (normalizedPage - 1) * normalizedPageSize;
+
+  return {
+    totalItems,
+    totalPages,
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+    startIndex,
+    items: list.slice(startIndex, startIndex + normalizedPageSize),
+  };
+}
 
 function getAdminModalHelper() {
   return window.AdminModal && typeof window.AdminModal.open === "function"
@@ -289,6 +353,100 @@ function setEmptyState(isEmpty) {
   }
 }
 
+function refreshAccountPageSizeOptions() {
+  const select = byId("account-page-size");
+  if (!select) return;
+
+  const currentOptions = Array.from(select.options).map((option) => option.value);
+  const expectedOptions = ACCOUNT_PAGE_SIZES.map(String);
+  if (currentOptions.join(",") !== expectedOptions.join(",")) {
+    select.replaceChildren(
+      ...ACCOUNT_PAGE_SIZES.map((size) => {
+        const option = document.createElement("option");
+        option.value = String(size);
+        option.textContent = getAccountText("perPage", `${size} / 页`, { size });
+        return option;
+      })
+    );
+  } else {
+    Array.from(select.options).forEach((option) => {
+      const size = Number(option.value) || ACCOUNT_PAGE_SIZE_DEFAULT;
+      option.textContent = getAccountText("perPage", `${size} / 页`, { size });
+    });
+  }
+
+  if (String(select.value) !== String(accountPageSize)) {
+    select.value = String(accountPageSize);
+  }
+}
+
+function updateAccountPaginationControls(pagination) {
+  const info = byId("account-pagination-info");
+  const prevButton = byId("account-page-prev");
+  const nextButton = byId("account-page-next");
+
+  refreshAccountPageSizeOptions();
+
+  if (info) {
+    info.textContent = getAccountText("pagination", "第 {current} / {total} 页 · 共 {count} 条", {
+      current: pagination.totalItems === 0 ? 0 : pagination.page,
+      total: pagination.totalPages,
+      count: pagination.totalItems,
+    });
+  }
+  if (prevButton) prevButton.disabled = pagination.totalItems === 0 || pagination.page <= 1;
+  if (nextButton) {
+    nextButton.disabled =
+      pagination.totalItems === 0 || pagination.page >= pagination.totalPages;
+  }
+}
+
+function goToPreviousAccountPage() {
+  if (accountCurrentPage <= 1) return;
+  accountCurrentPage -= 1;
+  renderTable();
+}
+
+function goToNextAccountPage() {
+  const { totalPages } = paginateAccounts(allTokens, accountCurrentPage, accountPageSize);
+  if (accountCurrentPage >= totalPages) return;
+  accountCurrentPage += 1;
+  renderTable();
+}
+
+function changeAccountPageSize() {
+  const select = byId("account-page-size");
+  const nextPageSize = normalizeAccountPageSize(select && select.value);
+  if (nextPageSize === accountPageSize) return;
+  accountPageSize = nextPageSize;
+  saveAccountPageSize(nextPageSize);
+  accountCurrentPage = 1;
+  renderTable();
+}
+
+function bindAccountPagination() {
+  const prevButton = byId("account-page-prev");
+  const nextButton = byId("account-page-next");
+  const sizeSelect = byId("account-page-size");
+  accountPageSize = loadAccountPageSize();
+
+  if (prevButton && prevButton.dataset.bound !== "1") {
+    prevButton.dataset.bound = "1";
+    prevButton.addEventListener("click", goToPreviousAccountPage);
+  }
+  if (nextButton && nextButton.dataset.bound !== "1") {
+    nextButton.dataset.bound = "1";
+    nextButton.addEventListener("click", goToNextAccountPage);
+  }
+  if (sizeSelect && sizeSelect.dataset.bound !== "1") {
+    sizeSelect.dataset.bound = "1";
+    sizeSelect.addEventListener("change", changeAccountPageSize);
+  }
+
+  refreshAccountPageSizeOptions();
+  updateAccountPaginationControls(paginateAccounts(allTokens, accountCurrentPage, accountPageSize));
+}
+
 function getAliveDisplay(item) {
   if (item && item.status === "active" && isFutureTimestamp(item.suspected_rate_limited_until)) {
     const softTitle = `soft-cooling until ${formatTime(item.suspected_rate_limited_until)}`;
@@ -514,6 +672,10 @@ function createRealQuotaCell(item) {
 function renderTable() {
   const tbody = byId("account-table-body");
   if (!tbody) return;
+  const pagination = paginateAccounts(allTokens, accountCurrentPage, accountPageSize);
+  accountCurrentPage = pagination.page;
+  accountPageSize = pagination.pageSize;
+  updateAccountPaginationControls(pagination);
 
   if (allTokens.length === 0) {
     tbody.replaceChildren();
@@ -524,7 +686,8 @@ function renderTable() {
   setEmptyState(false);
   const fragment = document.createDocumentFragment();
 
-  allTokens.forEach((item, index) => {
+  pagination.items.forEach((item, offset) => {
+    const index = pagination.startIndex + offset;
     const row = document.createElement("tr");
     row.classList.toggle("row-selected", Boolean(item._selected));
 
@@ -688,6 +851,7 @@ async function init() {
   realQuotaDisplayMode = REAL_QUOTA_DISPLAY_MODES.MODEL;
   ensureImportController();
   setupAdminModals();
+  bindAccountPagination();
   await loadAccountData();
 }
 
@@ -1485,5 +1649,9 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     getLocalQuotaDisplay,
     isUpstreamQuotaPool,
+    normalizeAccountPageSize,
+    loadAccountPageSize,
+    saveAccountPageSize,
+    paginateAccounts,
   };
 }

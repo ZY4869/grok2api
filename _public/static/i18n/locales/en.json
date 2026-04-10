@@ -326,6 +326,13 @@
     "nsfwFailed": "Enable failed: {msg}",
     "emptyResponse": "Empty response (HTTP {status})"
   },
+  "account": {
+    "prevPage": "Prev",
+    "nextPage": "Next",
+    "perPageLabel": "Per page",
+    "perPage": "{size} / page",
+    "pagination": "Page {current} / {total} \u00b7 {count} items"
+  },
   "cache": {
     "pageTitle": "Grok2API - Cache Mgmt",
     "title": "Cache Management",

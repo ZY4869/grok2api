@@ -324,6 +324,13 @@
     "nsfwFailed": "开启失败: {msg}",
     "emptyResponse": "空响应 (HTTP {status})"
   },
+  "account": {
+    "prevPage": "\u4e0a\u4e00\u9875",
+    "nextPage": "\u4e0b\u4e00\u9875",
+    "perPageLabel": "\u6bcf\u9875",
+    "perPage": "{size} / \u9875",
+    "pagination": "\u7b2c {current} / {total} \u9875 \u00b7 \u5171 {count} \u6761"
+  },
   "cache": {
     "pageTitle": "Grok2API - 缓存管理",
     "title": "缓存管理",
