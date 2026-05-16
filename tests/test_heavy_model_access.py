@@ -114,7 +114,7 @@ class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):
         ids = [item["id"] for item in payload["data"]]
         self.assertNotIn(HEAVY_MODEL_ID, ids)
         grok_auto = next(item for item in payload["data"] if item["id"] == "grok-auto")
-        self.assertEqual(grok_auto["display_name"], "Grok-Auto")
+        self.assertEqual(grok_auto["display_name"], "Grok Auto")
         self.assertNotIn("grok-4-heavy", ids)
 
     async def test_list_models_shows_heavy_with_available_heavy_token(self):
@@ -132,7 +132,7 @@ class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):
         ids = [item["id"] for item in payload["data"]]
         self.assertIn(HEAVY_MODEL_ID, ids)
         heavy = next(item for item in payload["data"] if item["id"] == HEAVY_MODEL_ID)
-        self.assertEqual(heavy["display_name"], "Grok-Heavy")
+        self.assertEqual(heavy["display_name"], "Grok Heavy")
         self.assertEqual(heavy["id"], HEAVY_MODEL_ID)
 
     async def test_list_models_super_shows_auto_and_expert(self):

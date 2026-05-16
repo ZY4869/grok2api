@@ -107,10 +107,10 @@ function loadChatHelpers() {
 test("getModelDisplayName returns friendly names while preserving ids for fallback", () => {
   const chatUi = loadChatHelpers();
 
-  assert.equal(chatUi.getModelDisplayName("grok-auto"), "Grok-Auto");
-  assert.equal(chatUi.getModelDisplayName("grok-3-fast"), "Grok-Fast");
-  assert.equal(chatUi.getModelDisplayName("grok-4-expert"), "Grok-Expert");
-  assert.equal(chatUi.getModelDisplayName("grok-4-heavy"), "Grok-Heavy");
+  assert.equal(chatUi.getModelDisplayName("grok-auto"), "Grok Auto");
+  assert.equal(chatUi.getModelDisplayName("grok-3-fast"), "Grok Fast");
+  assert.equal(chatUi.getModelDisplayName("grok-4-expert"), "Grok Expert");
+  assert.equal(chatUi.getModelDisplayName("grok-4-heavy"), "Grok Heavy");
   assert.equal(chatUi.getModelDisplayName("grok-imagine-1.0-fast"), "Grok Image Fast");
   assert.equal(chatUi.getModelDisplayName("unknown-model"), "unknown-model");
 });

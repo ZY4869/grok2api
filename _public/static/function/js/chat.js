@@ -5,10 +5,10 @@
   let modelValue = 'grok-auto';
   let modelList = [];
   const MODEL_DISPLAY_NAMES = {
-    'grok-auto': 'Grok-Auto',
-    'grok-3-fast': 'Grok-Fast',
-    'grok-4-expert': 'Grok-Expert',
-    'grok-4-heavy': 'Grok-Heavy',
+    'grok-auto': 'Grok Auto',
+    'grok-3-fast': 'Grok Fast',
+    'grok-4-expert': 'Grok Expert',
+    'grok-4-heavy': 'Grok Heavy',
     'grok-imagine-1.0-fast': 'Grok Image Fast',
   };
   const tempRange = document.getElementById('tempRange');
