@@ -27,12 +27,18 @@ from app.core.config import get_config
 from app.core.exceptions import UpstreamException
 from app.services.grok.services.model import (
     BASIC_POOL_NAME,
+    HEAVY_MODEL_ID,
     HEAVY_POOL_NAME,
     ModelService,
     SUPER_POOL_NAME,
 )
 from app.services.token.pool import TokenPool
-from app.services.token.model_access import model_requires_special_subscription
+from app.services.token.model_access import (
+    model_requires_special_subscription,
+    required_access_for_model,
+    token_supports_model,
+    token_supports_model_with_reason,
+)
 from app.services.grok.batch_services.usage import UsageService
 from app.services.reverse.utils.retry import RetryContext, extract_retry_after
 
@@ -164,6 +170,36 @@ class TokenManager:
     ) -> bool:
         if not token:
             return False
+        if model_id:
+            supported, reason = token_supports_model_with_reason(
+                token,
+                model_id,
+                pool_name=pool_name,
+            )
+            if reason == "unknown_real_tier_pool_fallback":
+                logger.info(
+                    "model_access_pool_fallback",
+                    extra={
+                        "model": model_id,
+                        "required_access": required_access_for_model(model_id),
+                        "pool": pool_name,
+                        "real_tier": token.real_tier or "",
+                        "fallback_mode": reason,
+                    },
+                )
+            elif not supported:
+                logger.debug(
+                    "model_access_token_skipped",
+                    extra={
+                        "model": model_id,
+                        "required_access": required_access_for_model(model_id),
+                        "pool": pool_name,
+                        "real_tier": token.real_tier or "",
+                        "fallback_mode": "",
+                        "reason": reason,
+                    },
+                )
+                return False
         if self._is_token_runtime_blocked(token):
             return False
         if self._uses_upstream_capability_quota(pool_name):
@@ -653,8 +689,16 @@ class TokenManager:
 
         for pool_name in ModelService.pool_candidates_for_model(model_id):
             pool = self.pools.get(pool_name)
-            if pool and pool.list():
-                return True
+            if not pool:
+                continue
+            for token in pool.list():
+                supported, _ = token_supports_model_with_reason(
+                    token,
+                    model_id,
+                    pool_name=pool_name,
+                )
+                if supported:
+                    return True
         return False
 
     def has_available_token_for_model(
@@ -675,7 +719,29 @@ class TokenManager:
     def model_access_denial_reason(self, model_id: str) -> str:
         if not model_requires_special_subscription(model_id):
             return ""
-        return "no_heavy_pool_tokens"
+        reasons: set[str] = set()
+        found_any = False
+        for pool_name in ModelService.pool_candidates_for_model(model_id):
+            pool = self.pools.get(pool_name)
+            if not pool:
+                continue
+            for token in pool.list():
+                found_any = True
+                supported, reason = token_supports_model_with_reason(
+                    token,
+                    model_id,
+                    pool_name=pool_name,
+                )
+                if supported:
+                    return ""
+                if reason:
+                    reasons.add(reason)
+
+        if not found_any:
+            if model_id == HEAVY_MODEL_ID:
+                return "no_heavy_pool_tokens"
+            return "no_entitled_pool_tokens"
+        return sorted(reasons)[0] if reasons else "no_entitled_pool_tokens"
 
     def get_token_for_video(
         self,

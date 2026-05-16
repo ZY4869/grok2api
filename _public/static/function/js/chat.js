@@ -4,6 +4,13 @@
   const modelDropdown = document.getElementById('modelDropdown');
   let modelValue = 'grok-auto';
   let modelList = [];
+  const MODEL_DISPLAY_NAMES = {
+    'grok-auto': 'Grok-Auto',
+    'grok-3-fast': 'Grok-Fast',
+    'grok-4-expert': 'Grok-Expert',
+    'grok-4-heavy': 'Grok-Heavy',
+    'grok-imagine-1.0-fast': 'Grok Image Fast',
+  };
   const tempRange = document.getElementById('tempRange');
   const tempValue = document.getElementById('tempValue');
   const topPRange = document.getElementById('topPRange');
@@ -317,7 +324,7 @@
   function restoreSessionModel() {
     const session = getActiveSession();
     if (!session || !session.model) return;
-    if (modelList.includes(session.model)) {
+    if (modelList.some((item) => item && item.id === session.model)) {
       selectModel(session.model);
     }
   }
@@ -1317,18 +1324,29 @@
 
   function selectModel(value) {
     modelValue = value;
-    if (modelLabel) modelLabel.textContent = value;
+    if (modelLabel) modelLabel.textContent = getModelDisplayName(value);
     renderModelDropdown();
+  }
+
+  function getModelDisplayName(modelId) {
+    const id = String(modelId || '');
+    const item = modelList.find((entry) => entry && entry.id === id);
+    if (item && item.displayName) return item.displayName;
+    return MODEL_DISPLAY_NAMES[id] || id;
   }
 
   function renderModelDropdown() {
     if (!modelDropdown) return;
     modelDropdown.innerHTML = '';
-    for (const id of modelList) {
+    for (const item of modelList) {
+      const id = item && item.id ? item.id : '';
+      const displayName = item && item.displayName ? item.displayName : getModelDisplayName(id);
+      if (!id) continue;
       const opt = document.createElement('div');
       opt.className = 'model-option' + (id === modelValue ? ' selected' : '');
       opt.dataset.value = id;
-      opt.textContent = id;
+      opt.textContent = displayName;
+      opt.title = id;
       modelDropdown.appendChild(opt);
     }
   }
@@ -1347,33 +1365,42 @@
 
   async function loadModels() {
     if (!modelDropdown) return;
-    const fallback = ['grok-auto', 'grok-3-fast', 'grok-4-expert', 'grok-imagine-1.0-fast'];
+    const fallback = [
+      { id: 'grok-auto', displayName: MODEL_DISPLAY_NAMES['grok-auto'] },
+      { id: 'grok-3-fast', displayName: MODEL_DISPLAY_NAMES['grok-3-fast'] },
+      { id: 'grok-4-expert', displayName: MODEL_DISPLAY_NAMES['grok-4-expert'] },
+      { id: 'grok-imagine-1.0-fast', displayName: MODEL_DISPLAY_NAMES['grok-imagine-1.0-fast'] },
+    ];
     const preferred = 'grok-auto';
     try {
       const res = await fetch('/v1/models', { cache: 'no-store' });
       if (!res.ok) throw new Error('models fetch failed');
       const data = await res.json();
       const items = Array.isArray(data && data.data) ? data.data : [];
-      const ids = items
-        .map(item => item && item.id)
-        .filter(Boolean)
-        .filter((id) => {
-          const name = String(id);
+      const filtered = items
+        .filter((item) => item && item.id)
+        .filter((item) => {
+          const name = String(item.id);
           if (name.startsWith('grok-imagine')) {
             return name === 'grok-imagine-1.0-fast';
           }
           return !name.includes('video');
-        });
-      modelList = ids.length ? ids : fallback;
+        })
+        .map((item) => ({
+          id: String(item.id),
+          displayName: String(item.display_name || MODEL_DISPLAY_NAMES[String(item.id)] || item.id),
+        }));
+      modelList = filtered.length ? filtered : fallback;
     } catch (e) {
       modelList = fallback;
     }
-    if (modelList.includes(preferred)) {
+    if (modelList.some((item) => item && item.id === preferred)) {
       modelValue = preferred;
     } else {
-      modelValue = modelList[modelList.length - 1] || preferred;
+      const fallbackItem = modelList[modelList.length - 1];
+      modelValue = fallbackItem && fallbackItem.id ? fallbackItem.id : preferred;
     }
-    if (modelLabel) modelLabel.textContent = modelValue;
+    if (modelLabel) modelLabel.textContent = getModelDisplayName(modelValue);
     renderModelDropdown();
     restoreSessionModel();
   }
@@ -1833,4 +1860,10 @@
     }
     loadSessions();
   })();
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      getModelDisplayName,
+    };
+  }
 })();

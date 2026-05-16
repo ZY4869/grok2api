@@ -10,6 +10,7 @@ from app.services.token.manager import TokenManager
 from app.services.token.model_access import (
     HEAVY_ACCESS_ERROR_CODE,
     HEAVY_MODEL_ID,
+    SUPER_ACCESS_ERROR_CODE,
 )
 from app.services.token.models import TokenInfo
 from app.services.token.pool import TokenPool
@@ -80,6 +81,24 @@ class TokenManagerHeavyModelTests(unittest.TestCase):
 
 
 class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_models_free_only_hides_super_and_heavy_text_models(self):
+        mgr = _build_manager(
+            basic_tokens=[_token("token-basic")]
+        )
+        mgr.reload_if_stale = AsyncMock(return_value=None)
+
+        with patch(
+            "app.api.v1.models.get_token_manager",
+            new=AsyncMock(return_value=mgr),
+        ):
+            payload = await models_api.list_models()
+
+        ids = [item["id"] for item in payload["data"]]
+        self.assertIn("grok-3-fast", ids)
+        self.assertNotIn("grok-auto", ids)
+        self.assertNotIn("grok-4-expert", ids)
+        self.assertNotIn(HEAVY_MODEL_ID, ids)
+
     async def test_list_models_hides_heavy_without_available_heavy_token(self):
         mgr = _build_manager(
             super_tokens=[_token("token-super")]
@@ -94,6 +113,9 @@ class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):
 
         ids = [item["id"] for item in payload["data"]]
         self.assertNotIn(HEAVY_MODEL_ID, ids)
+        grok_auto = next(item for item in payload["data"] if item["id"] == "grok-auto")
+        self.assertEqual(grok_auto["display_name"], "Grok-Auto")
+        self.assertNotIn("grok-4-heavy", ids)
 
     async def test_list_models_shows_heavy_with_available_heavy_token(self):
         mgr = _build_manager(
@@ -109,9 +131,52 @@ class ModelsRouteHeavyFilteringTests(unittest.IsolatedAsyncioTestCase):
 
         ids = [item["id"] for item in payload["data"]]
         self.assertIn(HEAVY_MODEL_ID, ids)
+        heavy = next(item for item in payload["data"] if item["id"] == HEAVY_MODEL_ID)
+        self.assertEqual(heavy["display_name"], "Grok-Heavy")
+        self.assertEqual(heavy["id"], HEAVY_MODEL_ID)
+
+    async def test_list_models_super_shows_auto_and_expert(self):
+        token = _token("token-super")
+        token.real_tier = "SUBSCRIPTION_TIER_GROK_PRO"
+        mgr = _build_manager(
+            super_tokens=[token]
+        )
+        mgr.reload_if_stale = AsyncMock(return_value=None)
+
+        with patch(
+            "app.api.v1.models.get_token_manager",
+            new=AsyncMock(return_value=mgr),
+        ):
+            payload = await models_api.list_models()
+
+        ids = [item["id"] for item in payload["data"]]
+        self.assertIn("grok-auto", ids)
+        self.assertIn("grok-4-expert", ids)
+        self.assertNotIn(HEAVY_MODEL_ID, ids)
 
 
 class HeavyModelRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_service_denies_super_text_without_entitled_token(self):
+        mgr = _DeniedManager()
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=lambda key, default=None: False if key == "app.stream" else default,
+        ):
+            with self.assertRaises(AppException) as context:
+                await ChatService.completions(
+                    model="grok-auto",
+                    messages=[{"role": "user", "content": "hello"}],
+                    stream=False,
+                )
+
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertEqual(context.exception.error_type, ErrorType.PERMISSION.value)
+        self.assertEqual(context.exception.code, SUPER_ACCESS_ERROR_CODE)
+
     async def test_chat_service_denies_heavy_without_entitled_token(self):
         mgr = _DeniedManager()
 
@@ -146,6 +211,26 @@ class HeavyModelRequestTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 403)
         self.assertEqual(context.exception.code, HEAVY_ACCESS_ERROR_CODE)
+
+    async def test_responses_service_denies_super_text_without_entitled_token(self):
+        mgr = _DeniedManager()
+
+        with patch(
+            "app.services.grok.services.chat.get_token_manager",
+            new=AsyncMock(return_value=mgr),
+        ), patch(
+            "app.services.grok.services.chat.get_config",
+            side_effect=lambda key, default=None: False if key == "app.stream" else default,
+        ):
+            with self.assertRaises(AppException) as context:
+                await ResponsesService.create(
+                    model="grok-4-expert",
+                    input_value="hello",
+                    stream=False,
+                )
+
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertEqual(context.exception.code, SUPER_ACCESS_ERROR_CODE)
 
 
 if __name__ == "__main__":

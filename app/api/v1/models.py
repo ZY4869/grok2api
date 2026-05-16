@@ -6,7 +6,11 @@ from fastapi import APIRouter
 
 from app.services.grok.services.model import ModelService
 from app.services.token import get_token_manager
-from app.services.token.model_access import HEAVY_MODEL_ID
+from app.services.token.model_access import (
+    FREE_TEXT_MODELS,
+    HEAVY_TEXT_MODELS,
+    SUPER_TEXT_MODELS,
+)
 
 
 router = APIRouter(tags=["Models"])
@@ -21,12 +25,17 @@ async def list_models():
     data = [
         {
             "id": m.model_id,
+            "display_name": m.display_name,
             "object": "model",
             "created": 0,
             "owned_by": "grok2api@ZY4869",
         }
         for m in ModelService.list()
-        if m.model_id != HEAVY_MODEL_ID
+        if (
+            m.model_id not in FREE_TEXT_MODELS
+            and m.model_id not in SUPER_TEXT_MODELS
+            and m.model_id not in HEAVY_TEXT_MODELS
+        )
         or token_mgr.has_available_token_for_model(m.model_id)
     ]
     return {"object": "list", "data": data}

@@ -1425,14 +1425,26 @@ class ChatService:
         # 获取 token
         token_mgr = await get_token_manager()
         await token_mgr.reload_if_stale()
+        is_stream = stream if stream is not None else get_config("app.stream")
+        last_user_text = _extract_last_user_text(messages)
+        prompt_summary = summarize_prompt_text(last_user_text)
+        image_keyword_categories = _detect_image_keyword_categories(last_user_text)
+        quick_mode_image_intent = _is_quick_mode_image_intent(model, messages)
 
-        if model_requires_special_subscription(model):
+        if model_requires_special_subscription(model) and not quick_mode_image_intent:
             if not token_mgr.has_entitled_token_for_model(model):
                 reason = token_mgr.model_access_denial_reason(model)
                 logger.warning(
-                    "Model access denied: model={} reason={}",
-                    model,
-                    reason or "insufficient_heavy_subscription",
+                    "Model access denied",
+                    extra={
+                        "model": model,
+                        "reason": reason
+                        or (
+                            "insufficient_heavy_subscription"
+                            if model == HEAVY_MODEL_ID
+                            else "insufficient_super_subscription"
+                        ),
+                    },
                 )
                 raise model_access_denied_error(model)
 
@@ -1441,11 +1453,6 @@ class ChatService:
             show_think = get_config("app.thinking")
         else:
             show_think = reasoning_effort != "none"
-        is_stream = stream if stream is not None else get_config("app.stream")
-        last_user_text = _extract_last_user_text(messages)
-        prompt_summary = summarize_prompt_text(last_user_text)
-        image_keyword_categories = _detect_image_keyword_categories(last_user_text)
-        quick_mode_image_intent = _is_quick_mode_image_intent(model, messages)
         if model in _QUICK_IMAGE_MODELS or prompt_summary.get("has_image_keywords"):
             logger.info(
                 "Quick image intent evaluated",
@@ -1485,9 +1492,10 @@ class ChatService:
             # 选择 token
             selection_total = 0
             if quota_requirement:
+                selection_model = "grok-3-fast" if quick_mode_image_intent else model
                 selection = await select_token_for_requirement(
                     token_mgr,
-                    model,
+                    selection_model,
                     tried=tried_tokens,
                     requirement=quota_requirement,
                     exhausted_tokens=exhausted_tokens,
@@ -1495,7 +1503,8 @@ class ChatService:
                 token = selection.token
                 selection_total = selection.total_candidates
             else:
-                token = await pick_token(token_mgr, model, tried_tokens)
+                routing_model = "grok-3-fast" if quick_mode_image_intent else model
+                token = await pick_token(token_mgr, routing_model, tried_tokens)
             if not token:
                 _raise_no_token(selection_total)
 

@@ -15,6 +15,8 @@ HEAVY_POOL_NAME = "ssoHeavy"
 HEAVY_MODEL_ID = "grok-4-heavy"
 HIGH_TIER_POOL_CANDIDATES = [HEAVY_POOL_NAME, SUPER_POOL_NAME]
 DEFAULT_POOL_CANDIDATES = [HEAVY_POOL_NAME, SUPER_POOL_NAME, BASIC_POOL_NAME]
+FAST_TEXT_POOL_CANDIDATES = [BASIC_POOL_NAME, SUPER_POOL_NAME, HEAVY_POOL_NAME]
+SUPER_TEXT_POOL_CANDIDATES = [SUPER_POOL_NAME, HEAVY_POOL_NAME]
 
 
 class Tier(str, Enum):
@@ -57,7 +59,7 @@ class ModelService:
             model_mode="auto",
             tier=Tier.BASIC,
             cost=Cost.LOW,
-            display_name="Grok Auto",
+            display_name="Grok-Auto",
             description="Automatically chooses Fast or Expert (grok-3/grok-4)",
             use_mode_id=True,
         ),
@@ -67,7 +69,7 @@ class ModelService:
             model_mode="fast",
             tier=Tier.BASIC,
             cost=Cost.LOW,
-            display_name="Grok 3 Fast",
+            display_name="Grok-Fast",
             description="Quick responses (grok-3)",
             use_mode_id=True,
         ),
@@ -77,7 +79,7 @@ class ModelService:
             model_mode="expert",
             tier=Tier.BASIC,
             cost=Cost.HIGH,
-            display_name="Grok 4 Expert",
+            display_name="Grok-Expert",
             description="Thinks hard (grok-4)",
             use_mode_id=True,
         ),
@@ -87,7 +89,7 @@ class ModelService:
             model_mode="heavy",
             tier=Tier.SUPER,
             cost=Cost.HIGH,
-            display_name="Grok 4 Heavy",
+            display_name="Grok-Heavy",
             description="SuperGrok Heavy (grok-4)",
             use_mode_id=True,
         ),
@@ -175,6 +177,10 @@ class ModelService:
         """鎸変紭鍏堢骇杩斿洖鍙敤 Token 姹犲垪琛?"""
         if model_id == HEAVY_MODEL_ID:
             return [HEAVY_POOL_NAME]
+        if model_id == "grok-3-fast":
+            return list(FAST_TEXT_POOL_CANDIDATES)
+        if model_id in {"grok-auto", "grok-4-expert"}:
+            return list(SUPER_TEXT_POOL_CANDIDATES)
         if cls.is_dedicated_media_model(model_id):
             return list(HIGH_TIER_POOL_CANDIDATES)
         return list(DEFAULT_POOL_CANDIDATES)
@@ -192,5 +198,7 @@ __all__ = [
     "HEAVY_MODEL_ID",
     "HIGH_TIER_POOL_CANDIDATES",
     "DEFAULT_POOL_CANDIDATES",
+    "FAST_TEXT_POOL_CANDIDATES",
     "ModelService",
+    "SUPER_TEXT_POOL_CANDIDATES",
 ]

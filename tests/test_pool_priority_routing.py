@@ -4,11 +4,12 @@ from unittest.mock import AsyncMock, patch
 from app.services.grok.services.chat import ChatService
 from app.services.grok.services.model import (
     BASIC_POOL_NAME,
-    DEFAULT_POOL_CANDIDATES,
+    FAST_TEXT_POOL_CANDIDATES,
     HEAVY_MODEL_ID,
     HEAVY_POOL_NAME,
     HIGH_TIER_POOL_CANDIDATES,
     ModelService,
+    SUPER_TEXT_POOL_CANDIDATES,
     SUPER_POOL_NAME,
 )
 from app.services.grok.utils.retry import pick_token
@@ -57,7 +58,15 @@ class ModelPoolPriorityTests(unittest.TestCase):
     def test_pool_candidates_follow_high_tier_priority(self):
         self.assertEqual(
             ModelService.pool_candidates_for_model("grok-3-fast"),
-            DEFAULT_POOL_CANDIDATES,
+            FAST_TEXT_POOL_CANDIDATES,
+        )
+        self.assertEqual(
+            ModelService.pool_candidates_for_model("grok-auto"),
+            SUPER_TEXT_POOL_CANDIDATES,
+        )
+        self.assertEqual(
+            ModelService.pool_candidates_for_model("grok-4-expert"),
+            SUPER_TEXT_POOL_CANDIDATES,
         )
         self.assertEqual(
             ModelService.pool_candidates_for_model("grok-imagine-1.0-fast"),
@@ -82,7 +91,7 @@ class ModelPoolPriorityTests(unittest.TestCase):
 
 
 class SelectionPriorityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pick_token_prefers_heavy_pool_for_text_models(self):
+    async def test_pick_token_prefers_basic_pool_for_fast_text_models(self):
         mgr = _build_manager(
             basic_tokens=[_token("token-basic")],
             heavy_tokens=[_token("token-heavy")],
@@ -90,7 +99,17 @@ class SelectionPriorityTests(unittest.IsolatedAsyncioTestCase):
 
         token = await pick_token(mgr, "grok-3-fast", tried=set())
 
-        self.assertEqual(token, "token-heavy")
+        self.assertEqual(token, "token-basic")
+
+    async def test_pick_token_prefers_super_pool_for_super_text_models(self):
+        mgr = _build_manager(
+            super_tokens=[_token("token-super")],
+            heavy_tokens=[_token("token-heavy")],
+        )
+
+        token = await pick_token(mgr, "grok-auto", tried=set())
+
+        self.assertEqual(token, "token-super")
 
     async def test_text_selection_falls_back_to_basic_when_high_tier_missing(self):
         mgr = _build_manager(basic_tokens=[_token("token-basic")])
@@ -139,7 +158,7 @@ class SelectionPriorityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ChatRoutingIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_chat_text_requests_choose_heavy_before_basic(self):
+    async def test_chat_text_requests_choose_basic_before_heavy_for_fast(self):
         mgr = _build_manager(
             basic_tokens=[_token("token-basic")],
             heavy_tokens=[_token("token-heavy")],
@@ -169,7 +188,7 @@ class ChatRoutingIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
-        self.assertEqual(chat_openai_mock.await_args.args[0], "token-heavy")
+        self.assertEqual(chat_openai_mock.await_args.args[0], "token-basic")
 
     async def test_quick_image_requests_can_fall_back_to_basic_pool(self):
         mgr = _build_manager(basic_tokens=[_token("token-basic")])

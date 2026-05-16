@@ -115,10 +115,12 @@ docker compose up -d
 
 | 模型名 | 底层模型 | 说明 | 可用账号 | 对话 | 图像 |
 | :-- | :-- | :-- | :-- | :--: | :--: |
-| `grok-auto` | grok-3/grok-4 | 自动选择 Fast 或 Expert | Basic/Super | 支持 | 支持 |
-| `grok-3-fast` | grok-3 | 快速响应 | Basic/Super | 支持 | 支持 |
-| `grok-4-expert` | grok-4 | 深度思考 | Basic/Super | 支持 | 支持 |
-| `grok-4-heavy` | grok-4 | SuperGrok Heavy | SuperGrok Heavy | 支持 | 支持 |
+| `grok-auto` | Grok-Auto | 自动选择 Fast 或 Expert | SuperGrok / Heavy | 支持 | 支持 |
+| `grok-3-fast` | Grok-Fast | 快速响应 | Free / SuperGrok / Heavy | 支持 | 支持 |
+| `grok-4-expert` | Grok-Expert | 深度思考 | SuperGrok / Heavy | 支持 | 支持 |
+| `grok-4-heavy` | Grok-Heavy | SuperGrok Heavy | Heavy | 支持 | 支持 |
+
+> 文本模型访问现按 `Free / SuperGrok / Heavy` 分层控制；内部账号池名称仍保持为 `ssoBasic / ssoSuper / ssoHeavy` 以兼容现有存储与管理流程。
 
 **图片 / 视频模型**
 

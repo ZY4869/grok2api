@@ -115,10 +115,12 @@ docker compose up -d
 
 | Model | Underlying | Description | Account | Chat | Image |
 | :-- | :-- | :-- | :-- | :--: | :--: |
-| `grok-auto` | grok-3/grok-4 | Auto chooses Fast or Expert | Basic/Super | Yes | Yes |
-| `grok-3-fast` | grok-3 | Quick responses | Basic/Super | Yes | Yes |
-| `grok-4-expert` | grok-4 | Thinks hard | Basic/Super | Yes | Yes |
-| `grok-4-heavy` | grok-4 | SuperGrok Heavy | SuperGrok Heavy | Yes | Yes |
+| `grok-auto` | Grok-Auto | Auto chooses Fast or Expert | SuperGrok / Heavy | Yes | Yes |
+| `grok-3-fast` | Grok-Fast | Quick responses | Free / SuperGrok / Heavy | Yes | Yes |
+| `grok-4-expert` | Grok-Expert | Thinks hard | SuperGrok / Heavy | Yes | Yes |
+| `grok-4-heavy` | Grok-Heavy | SuperGrok Heavy | Heavy | Yes | Yes |
+
+> Text model access now follows the `Free / SuperGrok / Heavy` matrix, while the internal pool names remain `ssoBasic / ssoSuper / ssoHeavy` for storage and admin compatibility.
 
 **Image / Video Models**
 
